@@ -102,7 +102,7 @@ const KNIFE = {
   cooldown: 0.16,
   returnTime: 2.2,             // missed knives come back to the belt after this
 };
-const DEFLECT = { time: 0.22, cooldown: 0.4, deflectZ: 6.5, deflectPx: 140 };
+const DEFLECT = { time: 0.22, cooldown: 0.28, deflectZ: 8.5, deflectPx: 140, touchPx: 64 };
 const MAX_HP = 5;
 const RANGE_TIME = 60;
 
@@ -223,6 +223,21 @@ function trackPointer(e) {
 function hitDeflectBtn(x, y) {
   return touchUI && inRect(x, y, DEFLECT_BTN);
 }
+function deflectRadius() {
+  return touchUI ? DEFLECT.touchPx : DEFLECT.deflectPx;
+}
+/** Nearest enemy knife whose on-screen circle contains (x, y). */
+function knifeUnder(x, y) {
+  let best = null, bd = Infinity;
+  const r = deflectRadius();
+  for (const k of game.knives) {
+    if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+    const p = proj(k.x, k.y, k.z);
+    const d = dist(p.x, p.y, x, y);
+    if (d < r && d < bd) { bd = d; best = { k, p }; }
+  }
+  return best;
+}
 addEventListener("pointermove", e => {
   if (e.pointerType === "mouse") touchUI = false;
   trackPointer(e);
@@ -232,10 +247,18 @@ canvas.addEventListener("pointerdown", e => {
   trackPointer(e);
   sfx.ensure();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
-  if (e.button === 2) mouse.rpressed = true;
-  else if (e.button === 0 || e.pointerType === "touch" || e.pointerType === "pen") {
-    if (hitDeflectBtn(mouse.x, mouse.y)) mouse.rpressed = true;
-    else { mouse.down = true; mouse.pressed = true; }
+  if (e.button === 2) {
+    mouse.rpressed = true;
+  } else if (e.button === 0 || e.pointerType === "touch" || e.pointerType === "pen") {
+    // Deflect pad: send back every knife that's currently in range (any drawn circle).
+    if (hitDeflectBtn(mouse.x, mouse.y)) {
+      mouse.rpressed = true; mouse.deflectAll = true;
+    } else if (game.state === "play" && knifeUnder(mouse.x, mouse.y)) {
+      // Tap / click the knife's circle to send it back.
+      mouse.rpressed = true; mouse.deflectAll = false;
+    } else {
+      mouse.down = true; mouse.pressed = true;
+    }
   }
   e.preventDefault();
 });
@@ -249,6 +272,7 @@ canvas.addEventListener("contextmenu", e => e.preventDefault());
 function clearInput() {
   for (const k in pressed) delete pressed[k];
   mouse.pressed = mouse.released = mouse.rpressed = false;
+  mouse.deflectAll = false;
 }
 
 // ============ AUDIO (synthesized, no assets) ============
@@ -1053,19 +1077,34 @@ function tryThrow() {
   sfx.whoosh(power);
 }
 
-function tryDeflect() {
+function tryDeflect({ all = false } = {}) {
   const g = game;
-  if (g.deflectCD > 0) return;
-  g.deflectCD = DEFLECT.cooldown; g.deflectT = DEFLECT.time;
-  g.deflectAt = { x: mouse.x, y: mouse.y };
-  sfx.slash();
+  if (g.state !== "play" || g.deflectCD > 0) return;
+  const aim = all ? null : knifeUnder(mouse.x, mouse.y);
   let hit = false;
-  for (const k of g.knives) {
-    if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
-    const p = proj(k.x, k.y, k.z);
-    if (dist(p.x, p.y, mouse.x, mouse.y) < DEFLECT.deflectPx) { deflect(k, p); hit = true; }
+  if (all) {
+    for (const k of g.knives) {
+      if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+      deflect(k, proj(k.x, k.y, k.z));
+      hit = true;
+    }
+  } else if (aim) {
+    deflect(aim.k, aim.p);
+    hit = true;
+  } else {
+    // Right-click / Space with no knife under the cursor: sweep at aim point.
+    const r = deflectRadius();
+    for (const k of g.knives) {
+      if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+      const p = proj(k.x, k.y, k.z);
+      if (dist(p.x, p.y, mouse.x, mouse.y) < r) { deflect(k, p); hit = true; }
+    }
   }
-  if (!hit) sfx.empty();
+  g.deflectCD = DEFLECT.cooldown;
+  g.deflectT = DEFLECT.time;
+  g.deflectAt = aim ? { x: aim.p.x, y: aim.p.y } : { x: mouse.x, y: mouse.y };
+  if (hit) sfx.slash();
+  else sfx.empty();
 }
 
 function deflect(k, p) {
@@ -1088,7 +1127,7 @@ function playerInput() {
   if (mouse.pressed) { g.charging = true; g.chargeT = 0; }
   if (g.charging && mouse.down) g.chargeT += DT;
   if (mouse.released && g.charging) { g.charging = false; tryThrow(); }
-  if (mouse.rpressed || pressed.Space || pressed.KeyF) tryDeflect();
+  if (mouse.rpressed || pressed.Space || pressed.KeyF) tryDeflect({ all: !!mouse.deflectAll });
 }
 
 // ============ UPDATE ============
@@ -1592,14 +1631,20 @@ function drawHUD() {
     const [name] = ACES[(g.duelN - 1) % ACES.length];
     text(`THROWDOWN ${g.duelN} · ${name.toUpperCase()}`, CX, 34, { size: 16, weight: 800, align: "center", spacing: 3 });
   }
-  // highlight incoming knives you can deflect
+  // highlight incoming knives you can deflect — tap / click inside the circle
+  const rHit = deflectRadius();
   for (const k of g.knives) {
     if (g.state !== "play" || k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
     const p = proj(k.x, k.y, k.z);
-    const near = dist(mouse.x, mouse.y, p.x, p.y) < DEFLECT.deflectPx;
-    ctx.strokeStyle = near ? "#6fd3ff" : "rgba(255,180,80,.55)";
-    ctx.lineWidth = near ? 2.5 : 1.5;
-    ctx.beginPath(); ctx.arc(p.x, p.y, near ? 28 : 22, 0, TAU); ctx.stroke();
+    const near = dist(mouse.x, mouse.y, p.x, p.y) < rHit;
+    const ring = touchUI ? 34 : 26;
+    ctx.strokeStyle = near ? "#6fd3ff" : "rgba(255,180,80,.7)";
+    ctx.lineWidth = near ? 3 : 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, ring, 0, TAU); ctx.stroke();
+    if (near) {
+      ctx.fillStyle = "rgba(111,211,255,.12)";
+      ctx.beginPath(); ctx.arc(p.x, p.y, ring, 0, TAU); ctx.fill();
+    }
   }
   if (g.hp === 1 && g.state === "play") {
     const a = 0.12 + 0.1 * Math.sin(g.t * 6);
@@ -1657,13 +1702,8 @@ function drawCrosshair() {
   const g = game, x = mouse.x, y = mouse.y;
   const empty = g.state === "play" && !g.hasKnife;
   let col = empty ? "#ff5d5d" : "#ffffff";
-  if (g.state === "play") {
-    for (const k of g.knives) {
-      if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
-      const p = proj(k.x, k.y, k.z);
-      if (dist(x, y, p.x, p.y) < DEFLECT.deflectPx) { col = "#6fd3ff"; break; }
-    }
-  }
+  if (g.state === "play" && knifeUnder(x, y)) col = "#6fd3ff";
+  else if (g.state === "play" && hitDeflectBtn(x, y)) col = "#6fd3ff";
   ctx.save();
   ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
   ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.stroke();
@@ -1694,11 +1734,11 @@ function drawMenu() {
   text("first person · aim · charge · throw · deflect", CX, 152, { size: 15, align: "center", color: "rgba(223,230,242,.7)", spacing: 3 });
   const tips = touchUI ? [
     ["Tap / hold", "throw at the crosshair — hold for a power throw"],
-    ["DEFLECT", "bottom-left button knocks knives back"],
+    ["Tap the circle", "or the DEFLECT pad — send knives back"],
     ["Headshots", "drop most enemies in one clean hit"],
   ] : [
     ["Click", "throw at the crosshair — hold for a power throw"],
-    ["Right-click / Space", "deflect incoming knives back at the thrower"],
+    ["Click a knife circle", "or right-click / Space to send it back"],
     ["Headshots", "drop most enemies in one clean hit"],
   ];
   tips.forEach(([k, d], i) => {
