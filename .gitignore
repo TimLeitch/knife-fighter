@@ -1,0 +1,15 @@
+# player data and logs never go to GitHub (they live in %LOCALAPPDATA%\KaoticGaming anyway)
+*.db
+*.db-wal
+*.db-shm
+*.log
+node_modules/
+# secrets for Docker (copy .env.example to .env on the server)
+.env
+# Cloudflare tunnel credentials
+*.pem
+.cloudflared/
+# editor / OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · Kaotic Gaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+<link rel="stylesheet" href="/site.css">
+<style>
+  main { display: grid; place-items: start center; padding-block: 48px; }
+  .box { width: 100%; max-width: 420px; padding: 24px; display: grid; gap: 18px; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .tabs button { min-height: 46px; border: 0; background: transparent; color: var(--muted); font: 700 15px var(--display); letter-spacing: .05em; text-transform: uppercase; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -3px 0 var(--accent); }
+  form { display: grid; gap: 14px; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .btn { width: 100%; }
+</style>
+</head>
+<body>
+<header class="bar"><div class="wrap"><a class="logo" href="/"><b>Kaotic</b> Gaming</a></div></header>
+<main class="wrap">
+  <div class="box panel">
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tabIn" aria-selected="true">Sign in</button>
+      <button type="button" role="tab" id="tabNew" aria-selected="false">Create account</button>
+    </div>
+    <form id="form" novalidate>
+      <div><label for="username">Username</label><input type="text" id="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" required>
+        <div class="hint" id="userHint" hidden>3–20 letters, numbers or underscores. Other players can see it.</div></div>
+      <div><label for="password">Password</label><input type="password" id="password" autocomplete="current-password" maxlength="128" required>
+        <div class="hint" id="passHint" hidden>At least 8 characters.</div></div>
+      <div id="confirmRow" hidden><label for="confirm">Password again</label><input type="password" id="confirm" autocomplete="new-password" maxlength="128"></div>
+      <div class="msg" id="msg" role="status"></div>
+      <button class="btn" id="submit" type="submit">Sign in</button>
+    </form>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const params = new URLSearchParams(location.search);
+const raw = params.get('next') || '/';
+// only ever return to a page on this site: resolve it like the browser will ("/\evil.com" means another site) and
+// keep it only if it stays on this origin
+const next = (() => { try { const u = new URL(raw, location.origin); return u.origin === location.origin && raw.startsWith('/') ? u.pathname + u.search + u.hash : '/'; } catch (e) { return '/'; } })();
+let creating = location.hash === '#create';
+
+function mode(c) {
+  creating = c;
+  $('#tabIn').setAttribute('aria-selected', String(!c)); $('#tabNew').setAttribute('aria-selected', String(c));
+  $('#confirmRow').hidden = !c; $('#userHint').hidden = !c; $('#passHint').hidden = !c;
+  $('#password').autocomplete = c ? 'new-password' : 'current-password';
+  $('#submit').textContent = c ? 'Create account' : 'Sign in';
+  $('#msg').textContent = ''; $('#msg').className = 'msg';
+}
+$('#tabIn').onclick = () => mode(false);
+$('#tabNew').onclick = () => mode(true);
+mode(creating);
+
+$('#form').onsubmit = async e => {
+  e.preventDefault();
+  const msg = $('#msg'), username = $('#username').value.trim(), password = $('#password').value;
+  msg.className = 'msg err';
+  if (!username || !password) { msg.textContent = 'Enter a username and password.'; return; }
+  if (creating && password !== $('#confirm').value) { msg.textContent = "The two passwords don't match."; return; }
+  $('#submit').disabled = true; msg.className = 'msg'; msg.textContent = creating ? 'Creating your account…' : 'Signing in…';
+  try {
+    const r = await fetch(creating ? '/api/register' : '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-KG': '1' }, body: JSON.stringify({ username, password }) });
+    const b = await r.json();
+    if (!r.ok) throw new Error(b.error || 'Something went wrong.');
+    location.href = next;
+  } catch (err) {
+    msg.className = 'msg err'; msg.textContent = err.message; $('#submit').disabled = false;
+  }
+};
+fetch('/api/me').then(r => r.json()).then(me => { if (me.user) location.href = next; });
+</script>
+</body>
+</html>

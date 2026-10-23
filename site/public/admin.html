@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Admin · Kaotic Gaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+<link rel="stylesheet" href="/site.css">
+<style>
+  main { display: grid; gap: 22px; padding-block: 22px 56px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tabs button { min-height: 40px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); font: 700 14px var(--display); letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+  .tabs .count { margin-left: 6px; color: var(--bad); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { padding: 14px 16px; }
+  .tile .v { font: 700 32px/1.1 var(--display); font-variant-numeric: tabular-nums; }
+  .tile .l { color: var(--muted); font-size: 14px; }
+  .tile.alert .v { color: var(--bad); }
+  section.block { display: grid; gap: 10px; min-width: 0; }
+  section.block > header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  section.block h2 { font-size: 20px; text-transform: uppercase; letter-spacing: .04em; }
+  .panel.pad { padding: 4px 4px; }
+  .empty { padding: 18px 12px; color: var(--muted); }
+  .two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 22px; }
+  @media (max-width: 860px) { .two { grid-template-columns: minmax(0, 1fr); } }
+  .feed { list-style: none; margin: 0; padding: 0; }
+  .feed li { padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 15px; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+  .feed li:last-child { border-bottom: 0; }
+  .feed time { color: var(--muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .feed .what { min-width: 0; overflow-wrap: anywhere; }
+  .gamechips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .gamechips button { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: 600 15px var(--body); cursor: pointer; }
+  .gamechips button[aria-selected="true"] { border-color: var(--accent); background: var(--panel-2); }
+  .err-msg { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  .ua { color: var(--muted); font-size: 12px; max-width: 280px; overflow-wrap: anywhere; }
+  /* player detail */
+  dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  .dlg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 18px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+  .dlg-head h2 { font-size: 26px; margin-right: auto; }
+  .dlg-body { padding: 16px 20px 22px; display: grid; gap: 18px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .gcard { padding: 14px 16px; display: grid; gap: 8px; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px 14px; }
+  .kv div { display: grid; }
+  .kv span { color: var(--muted); font-size: 13px; }
+  .kv b { font: 600 18px var(--display); font-variant-numeric: tabular-nums; }
+  .temp { font-family: var(--mono); font-size: 18px; color: var(--accent-2); user-select: all; }
+  .stamp { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header class="bar"><div class="wrap">
+  <a class="logo" href="/"><b>Kaotic</b> Gaming</a>
+  <span class="pill">Admin</span>
+  <nav><span class="stamp" id="stamp"></span><a class="btn ghost small" href="/">Games</a></nav>
+</div></header>
+
+<main class="wrap">
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="overview" aria-selected="true">Overview</button>
+    <button type="button" role="tab" data-tab="players">Players</button>
+    <button type="button" role="tab" data-tab="games">Games</button>
+    <button type="button" role="tab" data-tab="errors">Errors<span class="count" id="errCount"></span></button>
+    <button type="button" role="tab" data-tab="purchases">Purchases</button>
+  </div>
+  <div id="view"></div>
+</main>
+
+<dialog id="dlg"><div id="dlgInner"></div></dialog>
+
+<script>
+// ---------- helpers ----------
+const $ = s => document.querySelector(s);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c));
+  return e;
+}
+const api = async (url, opts = {}) => {
+  const r = await fetch(url, { ...opts, headers: { 'Content-Type': 'application/json', 'X-KG': '1', ...(opts.headers || {}) } });
+  if (r.status === 403) { location.href = '/login?next=/admin'; throw new Error('Signed out'); }
+  const b = await r.json(); if (!r.ok) throw new Error(b.error || 'Request failed'); return b;
+};
+function ago(t) {
+  if (!t) return 'never';
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  if (s < 30 * 86400) return Math.round(s / 86400) + ' d ago';
+  return new Date(t).toLocaleDateString();
+}
+function dur(sec) {
+  sec = Math.round(sec || 0);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), h = Math.floor(m / 60);
+  return h ? `${h}h ${m % 60}m` : `${m}m`;
+}
+const nice = k => k.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+const fmt = v => typeof v === 'number' ? v.toLocaleString() : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v);
+function eventText(e) {
+  const bits = Object.entries(e.data || {}).filter(([, v]) => ['number', 'string', 'boolean'].includes(typeof v)).slice(0, 4).map(([k, v]) => `${nice(k).toLowerCase()} ${fmt(v)}`);
+  return nice(e.type) + (bits.length ? ' · ' + bits.join(', ') : '');
+}
+const summaryPairs = s => Object.entries(s || {}).filter(([, v]) => ['number', 'string', 'boolean'].includes(typeof v));
+const tableOrEmpty = (rows, head, row, emptyText) => rows.length
+  ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, head.map(h => el('th', { class: h.num ? 'num' : null }, h.t || h)))), el('tbody', {}, rows.map(row))))
+  : el('div', { class: 'empty' }, emptyText);
+const userCell = (name, online, extra) => el('td', {}, el('strong', {}, name), ' ', online ? el('span', { class: 'pill live' }, 'online') : null, extra || null);
+
+// ---------- views ----------
+let tab = 'overview', gameSel = null, search = '', timer = null;
+const view = $('#view');
+
+async function render() {
+  clearTimeout(timer);
+  try {
+    if (tab === 'overview') await renderOverview();
+    if (tab === 'players') await renderPlayers();
+    if (tab === 'games') await renderGames();
+    if (tab === 'errors') await renderErrors();
+    if (tab === 'purchases') await renderPurchases();
+    $('#stamp').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) { if (e.message !== 'Signed out') { view.textContent = ''; view.append(el('div', { class: 'panel empty' }, "Couldn't load: " + e.message)); } }
+  // live views refresh themselves while you watch
+  if (!document.hidden && (tab === 'overview' || tab === 'games')) timer = setTimeout(render, 10000);
+}
+
+async function renderOverview() {
+  const o = await api('/api/admin/overview');
+  $('#errCount').textContent = o.errors24h ? ` ${o.errors24h}` : '';
+  view.replaceChildren(
+    el('div', { class: 'tiles' },
+      [['Playing now', o.playingNow.filter(p => !p.away).length], ['Players', o.players], ['New today', o.newToday], ['Active today', o.active24h], ['Game sessions today', o.sessions24h], ['Errors today', o.errors24h, o.errors24h > 0]]
+        .map(([l, v, alert]) => el('div', { class: 'tile panel' + (alert ? ' alert' : '') }, el('div', { class: 'v' }, fmt(v)), el('div', { class: 'l' }, l)))),
+    el('div', { class: 'two' },
+      el('section', { class: 'block' },
+        el('header', {}, el('h2', {}, 'Playing now'), el('span', { class: 'muted' }, 'Updates every 10 seconds')),
+        el('div', { class: 'panel pad' }, tableOrEmpty(o.playingNow, ['Player', 'Game', 'Doing', { t: 'For', num: true }], p =>
+          el('tr', { class: 'click', onclick: () => openPlayer(p.userId) }, userCell(p.username, !p.away),
+            el('td', {}, p.gameTitle), el('td', {}, p.away ? el('span', { class: 'muted' }, 'Tab in background') : p.status || '—'),
+            el('td', { class: 'num' }, dur((Date.now() - p.since) / 1000))), 'Nobody is playing right now.')),
+        el('header', {}, el('h2', {}, 'Games')),
+        el('div', { class: 'panel pad' }, tableOrEmpty(o.games, ['Game', { t: 'Now', num: true }, { t: 'Players', num: true }, { t: 'Active 7 days', num: true }, { t: 'Sessions', num: true }, { t: 'Play time', num: true }], g =>
+          el('tr', { class: 'click', onclick: () => { gameSel = g.slug; switchTab('games'); } },
+            el('td', {}, el('strong', {}, g.title), ' ', g.status !== 'live' ? el('span', { class: 'pill' }, g.status) : null),
+            el('td', { class: 'num' }, g.playingNow), el('td', { class: 'num' }, g.players), el('td', { class: 'num' }, g.active7d),
+            el('td', { class: 'num' }, fmt(g.sessions)), el('td', { class: 'num' }, dur(g.playtime))), 'No games in games.json yet.'))),
+      el('section', { class: 'block' },
+        el('header', {}, el('h2', {}, 'Recent activity')),
+        el('div', { class: 'panel' }, o.recent.length ? el('ul', { class: 'feed' }, o.recent.map(e =>
+          el('li', {}, el('time', {}, ago(e.at)), el('div', { class: 'what' }, el('strong', {}, e.username || 'someone'), ' · ', e.gameTitle, ' · ', eventText(e)))))
+          : el('div', { class: 'empty' }, 'Nothing yet. Activity shows up here as people play.'))))
+  );
+}
+
+async function renderPlayers() {
+  const rows = await api('/api/admin/players');
+  const input = el('input', { type: 'search', id: 'search', placeholder: 'Search players', value: search, 'aria-label': 'Search players' });
+  const tableBox = el('div', { class: 'panel pad' });
+  const draw = () => {
+    const f = rows.filter(r => r.username.toLowerCase().includes(search.toLowerCase()));
+    tableBox.replaceChildren(tableOrEmpty(f, ['Player', 'Joined', 'Last seen', { t: 'Games', num: true }, { t: 'Play time', num: true }], r =>
+      el('tr', { class: 'click', onclick: () => openPlayer(r.id) },
+        userCell(r.username, r.online, [r.role === 'admin' ? el('span', { class: 'pill' }, 'admin') : null, r.disabled ? el('span', { class: 'pill warn' }, 'turned off') : null]),
+        el('td', {}, new Date(r.created_at).toLocaleDateString()), el('td', {}, ago(r.last_seen)),
+        el('td', { class: 'num' }, r.games), el('td', { class: 'num' }, dur(r.playtime))), search ? 'No players match that search.' : 'No players yet.'));
+  };
+  input.oninput = () => { search = input.value; draw(); };
+  draw();
+  view.replaceChildren(el('section', { class: 'block' },
+    el('header', {}, el('h2', {}, `Players (${rows.length})`), el('span', { class: 'muted' }, 'Click a player to see their progress in every game')),
+    el('div', { style: 'max-width:360px' }, input), tableBox));
+}
+
+async function renderGames() {
+  const o = await api('/api/admin/overview');
+  if (!gameSel && o.games[0]) gameSel = o.games[0].slug;
+  const chips = el('div', { class: 'gamechips', role: 'tablist' }, o.games.map(g =>
+    el('button', { type: 'button', 'aria-selected': String(g.slug === gameSel), onclick: () => { gameSel = g.slug; render(); } }, `${g.title} · ${g.players}`)));
+  if (!gameSel) { view.replaceChildren(el('div', { class: 'panel empty' }, 'No games yet. Add one to games.json.')); return; }
+  const d = await api('/api/admin/game/' + gameSel);
+  // columns come from whatever this game reports, so each game can track its own things
+  const keys = [...new Set(d.players.flatMap(p => summaryPairs(p.summary).map(([k]) => k)))].slice(0, 6);
+  view.replaceChildren(el('section', { class: 'block' }, chips,
+    el('header', {}, el('h2', {}, d.title), el('span', { class: 'muted' }, `${d.players.length} players · sorted by most recent`)),
+    el('div', { class: 'panel pad' }, tableOrEmpty(d.players,
+      ['Player', ...keys.map(k => ({ t: nice(k), num: true })), { t: 'Sessions', num: true }, { t: 'Play time', num: true }, 'Last played'], p =>
+      el('tr', { class: 'click', onclick: () => openPlayer(p.user_id) }, userCell(p.username, p.online),
+        keys.map(k => el('td', { class: 'num' }, p.summary[k] == null ? '—' : fmt(p.summary[k]))),
+        el('td', { class: 'num' }, p.sessions), el('td', { class: 'num' }, dur(p.playtime_s)), el('td', {}, ago(p.last_played))),
+      'Nobody has played this game yet.'))));
+}
+
+async function renderErrors() {
+  const rows = await api('/api/admin/errors');
+  view.replaceChildren(el('section', { class: 'block' },
+    el('header', {}, el('h2', {}, 'Errors'), el('span', { class: 'muted' }, 'Problems reported from players’ devices, newest first. Kept for 60 days.')),
+    el('div', { class: 'panel pad' }, tableOrEmpty(rows, ['When', 'Player', 'Game', 'Error', 'Device'], r =>
+      el('tr', {}, el('td', {}, ago(r.at)), el('td', {}, r.username || el('span', { class: 'muted' }, 'signed out')), el('td', {}, r.game || '—'),
+        el('td', {}, el('div', { class: 'err-msg' }, r.message), r.detail ? el('details', {}, el('summary', {}, 'Details'), el('div', { class: 'err-msg' }, r.detail)) : null),
+        el('td', {}, el('div', { class: 'ua' }, r.user_agent || '—'))), 'No errors reported. \u{1F44D}'))));
+}
+
+// 99¢ Supporter Pack sales through PayPal (the money lands in your PayPal account; PayPal pays it out to your bank)
+async function renderPurchases() {
+  const d = await api('/api/admin/purchases');
+  const money = v => v == null || v === '' ? '—' : '$' + Number(v).toFixed(2);
+  view.replaceChildren(
+    el('div', { class: 'tiles' },
+      [['Sales', d.totals.count], ['Taken in', money(d.totals.gross)], ['PayPal fees', money(d.totals.fees)], ['You keep', money(d.totals.net)], ['Refunded', d.totals.refunded, d.totals.refunded > 0]]
+        .map(([l, v, alert]) => el('div', { class: 'tile panel' + (alert ? ' alert' : '') }, el('div', { class: 'v' }, typeof v === 'number' ? fmt(v) : v), el('div', { class: 'l' }, l)))),
+    el('section', { class: 'block' },
+      el('header', {}, el('h2', {}, 'Purchases'),
+        d.mode ? el('span', { class: 'muted' }, `PayPal ${d.mode} mode${d.mode === 'sandbox' ? ' (test money; only admins and testers can buy)' : ' (real money)'}. Newest first.`)
+               : el('span', { class: 'msg err' }, `The shop is off: ${d.problem || 'PayPal is not set up'}. See DEPLOY.md, “Taking payments”.`),
+        d.mode ? el('button', { class: 'btn ghost small', type: 'button', onclick: async e => {
+          const b = e.target; b.disabled = true; b.textContent = 'Checking…';
+          try { await api('/api/admin/shop/recheck', { method: 'POST', body: '{}' }); await render(); }
+          catch (err) { b.textContent = 'Couldn’t re-check: ' + (err.message || 'try again'); setTimeout(() => { b.disabled = false; b.textContent = 'Re-check with PayPal now'; }, 4000); }
+        } }, 'Re-check with PayPal now') : null),
+      el('div', { class: 'panel pad' }, tableOrEmpty(d.orders, ['When', 'Player', 'Item', { t: 'Paid', num: true }, { t: 'Fee', num: true }, { t: 'You keep', num: true }, 'Status', 'PayPal'], r =>
+        el('tr', {}, el('td', {}, ago(r.created_at)), el('td', {}, r.username || el('span', { class: 'muted' }, '(deleted)')), el('td', {}, r.productName),
+          el('td', { class: 'num' }, money(r.amount)), el('td', { class: 'num' }, money(r.fee)), el('td', { class: 'num' }, money(r.net)),
+          el('td', {}, el('span', { class: 'pill' + (r.status === 'completed' ? ' live' : ['refunded', 'reversed', 'failed'].includes(r.status) ? ' warn' : '') }, r.status)),
+          el('td', {}, el('div', { class: 'ua' }, `Order ${r.id}`, r.capture_id ? ` · payment ${r.capture_id}` : '', r.payer_email ? ` · ${r.payer_email}` : ''))),
+        'No purchases yet.'))));
+}
+
+// ---------- player detail ----------
+async function openPlayer(id) {
+  const dlg = $('#dlg'), inner = $('#dlgInner');
+  const d = await api('/api/admin/player/' + id);
+  const u = d.user, msg = el('div', { class: 'msg', role: 'status' });
+  const act = async (body, confirmText) => {
+    if (confirmText && !await askInline(confirmText)) return;
+    try {
+      const r = await api('/api/admin/user/' + u.id, { method: 'POST', body: JSON.stringify(body) });
+      if (r.tempPassword) {
+        msg.className = 'msg ok'; msg.replaceChildren('New temporary password (give it to the player; it is shown only once): ', el('span', { class: 'temp' }, r.tempPassword));
+      } else { await openPlayer(id); render(); }
+    } catch (e) { msg.className = 'msg err'; msg.textContent = e.message; }
+  };
+  // a confirm step built into the dialog (no browser pop-ups)
+  const confirmBox = el('div');
+  const askInline = text => new Promise(res => {
+    confirmBox.replaceChildren(el('div', { class: 'panel', style: 'padding:12px 14px;display:grid;gap:10px;border-color:var(--bad)' }, el('div', {}, text),
+      el('div', { class: 'actions' }, el('button', { class: 'btn danger small', type: 'button', onclick: () => { confirmBox.textContent = ''; res(true); } }, 'Yes, do it'),
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => { confirmBox.textContent = ''; res(false); } }, 'Cancel'))));
+  });
+  inner.replaceChildren(
+    el('div', { class: 'dlg-head' }, el('h2', {}, u.username),
+      d.now ? el('span', { class: 'pill live' }, `Playing ${d.now.gameTitle}`) : el('span', { class: 'pill' }, 'Last seen ' + ago(u.last_seen)),
+      u.role === 'admin' ? el('span', { class: 'pill' }, 'admin') : null, u.disabled ? el('span', { class: 'pill warn' }, 'turned off') : null,
+      el('button', { class: 'btn ghost small', type: 'button', onclick: () => dlg.close() }, 'Close')),
+    el('div', { class: 'dlg-body' },
+      el('div', { class: 'stamp' }, `Joined ${new Date(u.created_at).toLocaleDateString()}`, d.now && d.now.status ? ` · Right now: ${d.now.status}` : ''),
+      el('div', { class: 'actions' },
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => act({ disabled: !u.disabled }, u.disabled ? null : `Turn off ${u.username}'s account? They are signed out and can't sign back in until you turn it on again.`) }, u.disabled ? 'Turn account on' : 'Turn account off'),
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => act({ role: u.role === 'admin' ? 'player' : 'admin' }, u.role === 'admin' ? null : `Make ${u.username} an admin? They'll see this admin page and every player.`) }, u.role === 'admin' ? 'Remove admin' : 'Make admin'),
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => act({ resetPassword: true }, `Reset ${u.username}'s password? Their old password stops working and you'll get a temporary one to give them.`) }, 'Reset password')),
+      confirmBox, msg,
+      el('section', { class: 'block' }, el('header', {}, el('h2', {}, 'Games')),
+        d.games.length ? d.games.map(g => el('div', { class: 'gcard panel', style: 'background:var(--panel-2)' },
+          el('div', {}, el('strong', {}, g.title), ' ', el('span', { class: 'stamp' }, `· last played ${ago(g.last_played)}`)),
+          el('div', { class: 'kv' },
+            summaryPairs(g.summary).map(([k, v]) => el('div', {}, el('span', {}, nice(k)), el('b', {}, fmt(v)))),
+            el('div', {}, el('span', {}, 'Play time'), el('b', {}, dur(g.playtime_s))),
+            el('div', {}, el('span', {}, 'Sessions'), el('b', {}, g.sessions)))))
+          : el('div', { class: 'empty panel' }, "Hasn't played anything yet.")),
+      el('section', { class: 'block' }, el('header', {}, el('h2', {}, 'Recent activity')),
+        el('div', { class: 'panel' }, d.events.length ? el('ul', { class: 'feed' }, d.events.map(e =>
+          el('li', {}, el('time', {}, ago(e.at)), el('div', { class: 'what' }, e.gameTitle, ' · ', eventText(e))))) : el('div', { class: 'empty' }, 'No activity yet.'))))
+  );
+  if (!dlg.open) dlg.showModal();
+}
+
+// ---------- tabs ----------
+function switchTab(t) {
+  tab = t;
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
+  view.replaceChildren(el('div', { class: 'panel empty' }, 'Loading…'));
+  render();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+render();
+</script>
+</body>
+</html>

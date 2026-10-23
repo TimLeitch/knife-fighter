@@ -1,0 +1,44 @@
+# Kaotic Gaming site. Quick start:
+#   cp .env.example .env      (fill it in)
+#   docker compose up -d --build
+# With the optional Cloudflare Tunnel container:
+#   docker compose --profile tunnel up -d --build
+services:
+  site:
+    build: .
+    image: kaoticgaming-site
+    # always built from this repo, never pulled (Portainer's Git updates pull before deploying)
+    pull_policy: build
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${SITE_PORT:-8088}:8088"
+    environment:
+      # 1 = a reverse proxy / tunnel sits in front and passes the visitor's real IP and https status
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      # first admin, created on first start only if no admin exists yet
+      KG_ADMIN_USER: "${KG_ADMIN_USER:-}"
+      KG_ADMIN_PASSWORD: "${KG_ADMIN_PASSWORD:-}"
+      # 99¢ Supporter Pack through PayPal (see DEPLOY.md, "Taking payments"). Leave empty to keep the shop off.
+      PAYPAL_ENV: "${PAYPAL_ENV:-sandbox}"
+      PAYPAL_CLIENT_ID: "${PAYPAL_CLIENT_ID:-}"
+      PAYPAL_CLIENT_SECRET: "${PAYPAL_CLIENT_SECRET:-}"
+      PAYPAL_WEBHOOK_ID: "${PAYPAL_WEBHOOK_ID:-}"
+      PAYPAL_TESTERS: "${PAYPAL_TESTERS:-}"
+    volumes:
+      - kg-data:/data
+
+  # Optional: Cloudflare Tunnel, so no ports need to be opened on the server.
+  # In the tunnel's published application routes, point the hostnames at http://site:8088
+  tunnel:
+    image: cloudflare/cloudflared:latest   # pin a specific version here if you prefer
+    command: tunnel --no-autoupdate run
+    restart: unless-stopped
+    environment:
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:-}"
+    depends_on:
+      - site
+    profiles: ["tunnel"]
+
+volumes:
+  kg-data:

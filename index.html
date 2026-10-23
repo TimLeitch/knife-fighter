@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Knife Thrower</title>
+<link rel="manifest" href="/knife-thrower.webmanifest">
+<link rel="apple-touch-icon" href="/icons/knife-thrower-180.png">
+<meta name="theme-color" content="#0b0e14">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -109,6 +112,44 @@ function weighted(table) {          // [[item, weight], ...]
 function inRect(px, py, r) { return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
 function loadBest(key) { try { return Number(localStorage.getItem(key)) || 0; } catch (e) { return 0; } }
 function saveBest(key, v) { try { localStorage.setItem(key, String(v)); } catch (e) { /* storage unavailable */ } }
+
+// Kaotic Gaming site (window.KG is injected when played at /play/knife-thrower)
+const siteMode = () => !!window.KG;
+function mergeCloudBests() {
+  if (!siteMode()) return;
+  const cloud = window.KG.initialSave && window.KG.initialSave.best;
+  if (!cloud) return;
+  for (const m of ["fight", "range", "duel"]) {
+    if (typeof cloud[m] === "number") game.best[m] = Math.max(game.best[m] || 0, cloud[m]);
+  }
+}
+function persistBests() {
+  for (const m of ["fight", "range", "duel"]) saveBest("kf_best_" + m, game.best[m] || 0);
+  if (!siteMode()) return;
+  window.KG.save({
+    best: { fight: game.best.fight, range: game.best.range, duel: game.best.duel },
+    kills: Math.max((window.KG.initialSave && window.KG.initialSave.kills) || 0, game.stats.kills || 0),
+    heads: Math.max((window.KG.initialSave && window.KG.initialSave.heads) || 0, game.stats.heads || 0),
+  });
+}
+function reportProgress() {
+  if (!siteMode()) return;
+  const lifetime = window.KG.initialSave || {};
+  window.KG.report({
+    waveBest: game.best.fight,
+    rangeBest: game.best.range,
+    throwdownBest: game.best.duel,
+    kills: Math.max(lifetime.kills || 0, game.stats.kills || 0),
+    heads: Math.max(lifetime.heads || 0, game.stats.heads || 0),
+  });
+}
+function siteStatus() {
+  if (!siteMode() || game.state !== "play") return;
+  if (game.mode === "fight") window.KG.setStatus(`Wave ${game.wave} · score ${game.score.toLocaleString()}`);
+  else if (game.mode === "duel") window.KG.setStatus(`Throwdown ${game.duelN} · score ${game.score.toLocaleString()}`);
+  else window.KG.setStatus(`Range · ${Math.ceil(game.time)}s · ${game.score.toLocaleString()}`);
+}
+const HOME_BTN = { x: 22, y: 18, w: 100, h: 32 };
 
 // World (x right, y up from the ground, z away from you) → screen.
 function proj(x, y, z) {
@@ -759,6 +800,11 @@ const game = {
     const prev = this.best[this.mode];
     this.newBest = this.score > prev;
     if (this.newBest) { this.best[this.mode] = this.score; saveBest("kf_best_" + this.mode, this.score); }
+    persistBests();
+    reportProgress();
+    if (siteMode()) window.KG.event(this.mode === "range" ? "range_complete" : "run_over", {
+      mode: this.mode, score: this.score, wave: this.wave, duelN: this.duelN, newBest: this.newBest,
+    });
     if (this.mode === "range") sfx.clear(); else sfx.over();
   },
   addScore(base, x, y, label, color, size) {
@@ -1060,8 +1106,11 @@ function tick() {
     const keyCard = MENU_CARDS.find(c => pressed["Digit" + c.key] || pressed["Numpad" + c.key]);
     if (keyCard) g.start(keyCard.mode);
     else if (mouse.pressed) {
-      const card = MENU_CARDS.find(c => inRect(mouse.x, mouse.y, c));
-      if (card) { g.start(card.mode); mouse.down = false; }
+      if (siteMode() && inRect(mouse.x, mouse.y, HOME_BTN)) { window.KG.home(); mouse.down = false; }
+      else {
+        const card = MENU_CARDS.find(c => inRect(mouse.x, mouse.y, c));
+        if (card) { g.start(card.mode); mouse.down = false; }
+      }
     }
     clearInput(); return;
   }
@@ -1082,6 +1131,7 @@ function tick() {
   if (pressed.KeyR) { g.start(g.mode); clearInput(); return; }
   playerInput();
   updateWorld();
+  siteStatus();
   clearInput();
 }
 
@@ -1565,6 +1615,14 @@ function drawCrosshair() {
 function drawMenu() {
   drawWorld(true);
   ctx.fillStyle = "rgba(8,10,16,.45)"; ctx.fillRect(0, 0, W, H);
+  if (siteMode()) {
+    const hover = inRect(mouse.x, mouse.y, HOME_BTN);
+    rrect(ctx, HOME_BTN.x, HOME_BTN.y, HOME_BTN.w, HOME_BTN.h, 8);
+    ctx.fillStyle = hover ? "rgba(40,50,72,.95)" : "rgba(20,25,38,.88)"; ctx.fill();
+    ctx.strokeStyle = hover ? "#ff5d5d" : "rgba(255,255,255,.12)"; ctx.lineWidth = 1; ctx.stroke();
+    text("◀ GAMES", HOME_BTN.x + HOME_BTN.w / 2, HOME_BTN.y + 21, { size: 13, weight: 800, align: "center", color: "#b9c4d8" });
+    text(window.KG.user.username, W - 22, 38, { size: 13, weight: 700, align: "right", color: "rgba(223,230,242,.55)" });
+  }
   text("KNIFE THROWER", CX, 120, { size: 60, weight: 800, align: "center", spacing: 10, shadow: true });
   text("first person · aim · charge · throw · deflect", CX, 152, { size: 15, align: "center", color: "rgba(223,230,242,.7)", spacing: 3 });
   const tips = [
@@ -1648,6 +1706,11 @@ function render() {
   drawCrosshair();
 }
 
+mergeCloudBests();
+if (siteMode()) {
+  reportProgress();
+  window.KG.setStatus("Menu");
+}
 fit();
 addEventListener("resize", fit);
 requestAnimationFrame(loop);

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>High Scores · Kaotic Gaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+<link rel="stylesheet" href="/site.css">
+<style>
+  main { display: grid; gap: 18px; padding-block: 28px 56px; }
+  .head h1 { font-size: clamp(32px, 6vw, 52px); text-transform: uppercase; }
+  .head h1 span { color: var(--accent); font-style: italic; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .chip { min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font: 700 14px var(--display); letter-spacing: .05em; text-transform: uppercase; cursor: pointer; }
+  .chip[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+  .chip.game[aria-pressed="true"] { border-color: var(--accent-2); }
+  .you { padding: 12px 16px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .you b { font: 700 22px var(--display); color: var(--accent-2); font-variant-numeric: tabular-nums; }
+  td.rank { width: 64px; font: 700 18px var(--display); font-variant-numeric: tabular-nums; }
+  tr.r1 td.rank { color: #ffd34d; } tr.r2 td.rank { color: #d6dde6; } tr.r3 td.rank { color: #e0a06a; }
+  tr.me td { background: rgba(255, 178, 31, .08); }
+  td.value { font: 700 18px var(--display); font-variant-numeric: tabular-nums; text-align: right; }
+  .empty { padding: 28px 16px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="bar"><div class="wrap">
+  <a class="logo" href="/"><b>Kaotic</b> Gaming</a>
+  <nav id="nav"><a class="btn ghost small" href="/">Games</a></nav>
+</div></header>
+
+<main class="wrap">
+  <section class="head"><div class="eyebrow">Everyone's best</div><h1>High <span>Scores</span></h1></section>
+  <div class="row" id="games" role="group" aria-label="Game"></div>
+  <div class="row" id="metrics" role="group" aria-label="Rank by"></div>
+  <div id="you"></div>
+  <div class="panel" id="board"><div class="empty">Loading…</div></div>
+  <p class="muted" style="margin:0;font-size:14px">Scores update as people play. Updates every 30 seconds.</p>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) { if (v == null || v === false) continue; if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c));
+  return e;
+}
+const fmt = n => Number(n).toLocaleString();
+const ago = t => { const s = (Date.now() - t) / 1000; return s < 3600 ? Math.max(1, Math.round(s / 60)) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
+let game = location.hash.slice(1) || null, by = null, timer = null, gamesList = [];
+
+async function init() {
+  const [me, games] = await Promise.all([fetch('/api/me').then(r => r.json()), fetch('/api/games').then(r => r.json())]);
+  if (me.user) $('#nav').prepend(el('span', { class: 'who' }, 'Signed in as ', el('strong', {}, me.user.username)));
+  gamesList = games.filter(g => g.leaderboard && g.leaderboard.length);
+  if (!gamesList.length) { $('#board').replaceChildren(el('div', { class: 'empty' }, 'No games have high scores yet.')); return; }
+  if (!gamesList.some(g => g.slug === game)) game = gamesList[0].slug;
+  load();
+}
+
+async function load() {
+  clearTimeout(timer);
+  const q = by ? '?by=' + encodeURIComponent(by) : '';
+  const d = await fetch(`/api/leaderboard/${game}${q}`).then(r => r.json());
+  by = d.by;
+  history.replaceState(null, '', '#' + game);
+  $('#games').replaceChildren(...gamesList.map(g => el('button', { class: 'chip game', type: 'button', 'aria-pressed': String(g.slug === game), onclick: () => { game = g.slug; by = null; load(); } }, g.title)));
+  $('#metrics').replaceChildren(el('span', { class: 'muted', style: 'margin-right:4px' }, 'Rank by'),
+    ...d.metrics.map(m => el('button', { class: 'chip', type: 'button', 'aria-pressed': String(m.key === by), onclick: () => { by = m.key; load(); } }, m.label)));
+  const label = (d.metrics.find(m => m.key === by) || {}).label;
+  $('#you').replaceChildren(d.me ? el('div', { class: 'you panel' }, 'Your rank: ', el('b', {}, '#' + d.me.rank), el('span', { class: 'muted' }, `${label}: ${fmt(d.me.value)}`)) : '');
+  const others = d.metrics.filter(m => m.key !== by);
+  $('#board').replaceChildren(d.rows.length
+    ? el('div', { class: 'table-wrap' }, el('table', {},
+        el('thead', {}, el('tr', {}, el('th', {}, '#'), el('th', {}, 'Player'), others.map(m => el('th', { class: 'num' }, m.label)), el('th', { class: 'num' }, label), el('th', {}, 'Last played'))),
+        el('tbody', {}, d.rows.map(r => el('tr', { class: (r.rank <= 3 ? 'r' + r.rank : '') + (r.isMe ? ' me' : '') },
+          el('td', { class: 'rank' }, r.rank), el('td', {}, el('strong', {}, r.username),
+            r.supporter ? el('span', { class: 'pill supporter', style: 'margin-left:8px', title: 'Supports Kaotic Gaming' }, '♥ supporter') : null,
+            r.isMe ? el('span', { class: 'pill', style: 'margin-left:8px' }, 'you') : null),
+          others.map(m => el('td', { class: 'num' }, r.others[m.key] == null ? '—' : fmt(r.others[m.key]))),
+          el('td', { class: 'value' }, fmt(r.value)), el('td', { class: 'muted' }, ago(r.lastPlayed)))))))
+    : el('div', { class: 'empty' }, 'No scores yet. Be the first on the board!'));
+  if (!document.hidden) timer = setTimeout(load, 30000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && game) load(); });
+init().catch(() => $('#board').replaceChildren(el('div', { class: 'empty' }, "Couldn't load high scores. Refresh to try again.")));
+</script>
+</body>
+</html>

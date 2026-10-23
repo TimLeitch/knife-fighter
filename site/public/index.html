@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kaotic Gaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+<link rel="stylesheet" href="/site.css">
+<style>
+  .hero { padding-block: 48px 28px; display: grid; gap: 10px; }
+  .hero h1 { font-size: clamp(36px, 7vw, 64px); text-transform: uppercase; letter-spacing: .02em; }
+  .hero h1 span { color: var(--accent); font-style: italic; }
+  .hero p { margin: 0; max-width: 40em; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; padding-bottom: 56px; }
+  .card { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; min-width: 0; }
+  .card .art { height: 120px; position: relative; background:
+      repeating-linear-gradient(135deg, rgba(255,255,255,.04) 0 12px, transparent 12px 24px),
+      linear-gradient(135deg, var(--c), #1b1d21 75%); }
+  .card .art h2 { position: absolute; left: 18px; bottom: 14px; font-size: 30px; text-transform: uppercase; text-shadow: 0 2px 0 rgba(0,0,0,.5); }
+  .card .art .pill { position: absolute; right: 12px; top: 12px; background: rgba(0,0,0,.55); }
+  .card .body { padding: 16px 18px 6px; display: grid; gap: 8px; align-content: start; }
+  .card .tag { font-weight: 600; }
+  .card .desc { margin: 0; color: var(--muted); font-size: 15px; }
+  .card .mine { font-size: 14px; color: var(--accent-2); }
+  .card .top { font-size: 14px; color: var(--muted); }
+  .card .top strong { color: var(--text); }
+  .card .foot { padding: 12px 18px 18px; display: flex; gap: 10px; align-items: center; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header class="bar"><div class="wrap">
+  <a class="logo" href="/"><b>Kaotic</b> Gaming</a>
+  <nav id="nav"><span class="who">Loading…</span></nav>
+</div></header>
+
+<main class="wrap">
+  <section class="hero">
+    <div class="eyebrow">Free browser games</div>
+    <h1>Pick a game. <span>Cause chaos.</span></h1>
+    <p>Make a free account to play. Your progress saves to your account, so you can pick up where you left off on any phone or computer.</p>
+  </section>
+  <section class="grid" id="games"><div class="panel empty">Loading games…</div></section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) k === 'class' ? e.className = v : k === 'style' ? e.setAttribute('style', v) : e.setAttribute(k, v); for (const c of kids) e.append(c); return e; };
+const summaryText = s => Object.entries(s || {}).filter(([k, v]) => ['number', 'string'].includes(typeof v) && k !== 'label').slice(0, 3)
+  .map(([k, v]) => `${k.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase())} ${v}`).join(' · ');
+
+async function load() {
+  const [me, games] = await Promise.all([fetch('/api/me').then(r => r.json()), fetch('/api/games').then(r => r.json())]);
+  if (me.needsSetup) { location.href = '/setup'; return; }
+  const nav = $('#nav'); nav.textContent = '';
+  nav.append(el('a', { class: 'btn ghost small', href: '/scores' }, '🏆 High scores'));
+  if ((me.entitlements || []).includes('supporter')) nav.append(el('a', { class: 'btn ghost small', href: '/shop' }, '♥ Supporter'));
+  else if (me.shop) nav.append(el('a', { class: 'btn ghost small', href: '/shop' }, '♥ Support · 99¢'));
+  if (me.user) {
+    nav.append(el('span', { class: 'who' }, 'Signed in as ', el('strong', {}, me.user.username)));
+    if (me.user.role === 'admin') nav.append(el('a', { class: 'btn ghost small', href: '/admin' }, 'Admin'));
+    const out = el('button', { class: 'btn ghost small', type: 'button' }, 'Sign out');
+    out.onclick = async () => { await fetch('/api/logout', { method: 'POST', headers: { 'X-KG': '1' } }); location.reload(); };
+    nav.append(out);
+  } else {
+    nav.append(el('a', { class: 'btn ghost small', href: '/login' }, 'Sign in'), el('a', { class: 'btn small', href: '/login#create' }, 'Create account'));
+  }
+  const grid = $('#games'); grid.textContent = '';
+  if (!games.length) { grid.append(el('div', { class: 'panel empty' }, 'No games yet. Check back soon.')); return; }
+  for (const g of games) {
+    const href = me.user ? `/play/${g.slug}` : `/login?next=${encodeURIComponent('/play/' + g.slug)}`;
+    const art = el('div', { class: 'art', style: `--c:${/^#[0-9a-f]{3,8}$/i.test(g.color) ? g.color : '#d9a93a'}` }, el('h2', {}, g.title));
+    if (g.playingNow) art.append(el('span', { class: 'pill live' }, `${g.playingNow} playing now`));
+    const body = el('div', { class: 'body' }, el('div', { class: 'tag' }, g.tagline), el('p', { class: 'desc' }, g.description));
+    if (g.mine) body.append(el('div', { class: 'mine' }, 'Your progress: ' + (summaryText(g.mine.summary) || 'started')));
+    if (g.top) body.append(el('div', { class: 'top' }, '🏆 #1 ', el('strong', {}, g.top.username), g.top.supporter ? ' ♥' : '', ` · ${g.top.label} ${Number(g.top.value).toLocaleString()}`));
+    const foot = el('div', { class: 'foot' }, el('a', { class: 'btn', href }, g.mine ? 'Continue' : 'Play'));
+    if (g.leaderboard && g.leaderboard.length) foot.append(el('a', { class: 'btn ghost small', href: '/scores#' + g.slug }, 'High scores'));
+    if (g.status === 'beta') foot.append(el('span', { class: 'pill' }, 'Beta'));
+    grid.append(el('article', { class: 'card panel' }, art, body, foot));
+  }
+}
+load().catch(() => { $('#games').innerHTML = '<div class="panel empty">Couldn\'t load the games. Refresh the page to try again.</div>'; });
+</script>
+</body>
+</html>

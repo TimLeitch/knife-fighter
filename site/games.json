@@ -1,0 +1,18 @@
+[
+  {
+    "slug": "knife-thrower",
+    "title": "Knife Thrower",
+    "tagline": "Aim. Charge. Throw. Deflect.",
+    "description": "First-person knife throwing. Clear rushers before they reach you, knock incoming knives back, duel ace throwers, or chase a high score on the target range.",
+    "entry": "../index.html",
+    "color": "#ff5d5d",
+    "status": "live",
+    "leaderboard": [
+      { "key": "waveBest", "label": "Wave score" },
+      { "key": "rangeBest", "label": "Range score" },
+      { "key": "throwdownBest", "label": "Throwdown score" },
+      { "key": "kills", "label": "Takedowns" },
+      { "key": "heads", "label": "Headshots" }
+    ]
+  }
+]

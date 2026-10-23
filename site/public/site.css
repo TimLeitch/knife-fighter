@@ -1,0 +1,72 @@
+/* Kaotic Gaming — shared site styles. One deliberate dark arcade look.
+   Layout: a single centered column (max 1120px) with a sticky top bar. */
+:root {
+  color-scheme: dark;
+  --bg: #0f1012;
+  --panel: #17191d;
+  --panel-2: #1f2227;
+  --line: #2c3036;
+  --text: #ece8df;
+  --muted: #9b978d;
+  --accent: #ff5a1f;      /* kaotic orange */
+  --accent-2: #ffb21f;
+  --good: #5fd08a;
+  --bad: #ff6b5e;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.5 var(--body); }
+a { color: var(--accent-2); }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+/* top bar */
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: rgba(15,16,18,.92); backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+.bar .wrap { display: flex; align-items: center; gap: 16px; min-height: 60px; flex-wrap: wrap; padding-block: 8px; }
+.logo { font: 700 24px/1 var(--display); letter-spacing: .06em; color: var(--text); text-decoration: none; text-transform: uppercase; }
+.logo b { color: var(--accent); font-style: italic; }
+.bar nav { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.who { color: var(--muted); font-size: 15px; }
+.who strong { color: var(--text); }
+
+/* buttons & inputs */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 0 18px; border: 0; border-radius: 8px; font: 700 16px var(--display); letter-spacing: .03em; text-transform: uppercase; text-decoration: none; cursor: pointer; background: var(--accent); color: #1a0d05; }
+.btn:hover { filter: brightness(1.12); }
+.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.btn.ghost:hover { border-color: var(--muted); }
+.btn.small { min-height: 34px; padding: 0 12px; font-size: 13px; }
+.btn.danger { background: #8a2e22; color: #fff; }
+.btn[disabled] { opacity: .5; cursor: default; filter: none; }
+label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+input[type=text], input[type=password], input[type=search] { width: 100%; min-height: 46px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: 17px var(--body); }
+input:focus { border-color: var(--accent-2); outline: none; }
+
+/* panels & type */
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+.eyebrow { font: 600 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.muted { color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.msg { min-height: 24px; font-size: 15px; }
+.msg.err { color: var(--bad); }
+.msg.ok { color: var(--good); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; font-size: 13px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.pill.live { color: var(--good); border-color: rgba(95,208,138,.4); }
+.pill.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px var(--good); }
+.pill.warn { color: var(--bad); border-color: rgba(255,107,94,.4); }
+
+/* tables (admin) */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
+th { text-align: left; font: 600 12px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--panel-2); }
+.num { text-align: right; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* the 99¢ Supporter Pack */
+.pill.supporter { color: #e8d8ff; border-color: rgba(160,120,240,.55); background: rgba(91,47,184,.35); }
+.btn.support { background: #8a6ad0; color: #160b2c; }

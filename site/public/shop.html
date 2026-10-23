@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Supporter Pack · Kaotic Gaming</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600&family=Chakra+Petch:wght@600;700&display=swap">
+<link rel="stylesheet" href="/site.css">
+<style>
+  .shop { padding-block: 40px 56px; display: grid; gap: 22px; max-width: 720px; }
+  .shop h1 { font-size: clamp(30px, 6vw, 48px); text-transform: uppercase; }
+  .shop h1 span { color: #b99af0; font-style: italic; }
+  .lead { margin: 0; color: var(--muted); }
+  .pack { display: grid; grid-template-columns: 180px 1fr; overflow: hidden; }
+  .pack .art { min-height: 180px; display: grid; place-items: center; font-size: 72px; color: #f3e6ff;
+    background: repeating-linear-gradient(135deg, rgba(255,255,255,.05) 0 12px, transparent 12px 24px), linear-gradient(135deg, #5b2fb8, #2a1c4e 80%); }
+  .pack .body { padding: 18px 20px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .pack h2 { font-size: 26px; text-transform: uppercase; }
+  .price { font: 700 30px var(--display); color: #e8d8ff; }
+  .pack ul { margin: 0; padding-left: 20px; color: var(--text); }
+  .pack li { margin-bottom: 4px; }
+  .buy { display: grid; gap: 12px; padding: 18px 20px; }
+  #pay-buttons { min-height: 50px; }
+  .test { padding: 10px 14px; border-radius: 8px; background: rgba(255,178,31,.12); border: 1px solid rgba(255,178,31,.45); color: var(--accent-2); font-size: 15px; }
+  .owned { padding: 16px 20px; border-radius: 12px; background: rgba(91,47,184,.3); border: 1px solid rgba(160,120,240,.55); font-size: 18px; }
+  .fine { font-size: 14px; color: var(--muted); margin: 0; }
+  @media (max-width: 560px) { .pack { grid-template-columns: 1fr; } .pack .art { min-height: 110px; } }
+</style>
+</head>
+<body>
+<header class="bar"><div class="wrap">
+  <a class="logo" href="/"><b>Kaotic</b> Gaming</a>
+  <nav id="nav"><span class="who">Loading…</span></nav>
+</div></header>
+
+<main class="wrap">
+  <section class="shop">
+    <div class="eyebrow">Support the site</div>
+    <h1>Supporter <span>Pack</span></h1>
+    <p class="lead">Kaotic Gaming is free to play. If you're enjoying it, the Supporter Pack is a small one-time way to help pay for hosting, and you get something to show for it.</p>
+
+    <div class="panel pack">
+      <div class="art" aria-hidden="true">♥</div>
+      <div class="body">
+        <h2>Supporter Pack</h2>
+        <div class="price" id="price">$0.99</div>
+        <ul>
+          <li><strong>♥ supporter</strong> badge next to your name on every high-score board</li>
+          <li>Helps keep Kaotic Gaming online for Knife Thrower and the other games</li>
+          <li>Yours for good on this account. Buy once, it's never charged again.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="panel buy" id="buy" aria-live="polite">
+      <p class="fine">Loading…</p>
+    </div>
+
+    <p class="fine">Payments are handled by PayPal: pay with your PayPal account, Venmo, or a debit or credit card. We never see your card details.
+      This is a one-time purchase of a digital item for your Kaotic Gaming account.</p>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) { if (v == null || v === false) continue; if (k === 'class') e.className = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v); }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c));
+  return e;
+}
+const from = (new URLSearchParams(location.search).get('from') || '').replace(/[^a-z0-9-]/g, '');
+const backLink = () => from ? el('a', { class: 'btn', href: '/play/' + from }, '◀ Back to the game') : el('a', { class: 'btn', href: '/' }, '◀ Back to the games');
+const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-KG': '1' }, credentials: 'same-origin', body: JSON.stringify(body) })
+  .then(async r => ({ ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) }));
+const buy = $('#buy');
+const show = (...kids) => buy.replaceChildren(...kids);
+const note = (text, cls) => el('p', { class: 'msg' + (cls ? ' ' + cls : '') }, text);
+
+function thanks() {
+  show(el('div', { class: 'owned' }, '♥ You’re a supporter. Thank you! Your ♥ badge shows on the high scores.'),
+       el('div', {}, backLink()),
+       from ? el('p', { class: 'fine' }, 'If the game is still open in another tab, just switch back to it.') : null);
+}
+
+// PayPal's own script, loaded only on this page, with this site's public client ID
+function loadPayPal(clientId, currency) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    // Pay Later and PayPal Credit can't be used for a 99¢ item, so they're hidden; Venmo shows on US phones
+    s.src = 'https://www.paypal.com/sdk/js?' + new URLSearchParams({ 'client-id': clientId, currency, intent: 'capture', components: 'buttons', 'enable-funding': 'venmo', 'disable-funding': 'paylater,credit' });
+    s.onload = () => window.paypal ? resolve(window.paypal) : reject(new Error('PayPal did not load'));
+    s.onerror = () => reject(new Error('PayPal did not load'));
+    document.head.append(s);
+  });
+}
+
+async function load() {
+  const [me, shop] = await Promise.all([fetch('/api/me').then(r => r.json()), fetch('/api/shop', { cache: 'no-store' }).then(r => r.json())]);
+  const nav = $('#nav'); nav.textContent = '';
+  nav.append(el('a', { class: 'btn ghost small', href: '/' }, 'Games'), el('a', { class: 'btn ghost small', href: '/scores' }, '🏆 High scores'));
+  if (me.user) nav.append(el('span', { class: 'who' }, 'Signed in as ', el('strong', {}, me.user.username)));
+
+  const pack = (shop.products || []).find(p => p.id === 'supporter');
+  if (pack) $('#price').textContent = '$' + pack.price;
+  if (pack && pack.owned) return thanks();
+  // signed out: offer sign-in whenever the shop is set up (in test mode, admins and testers can then buy)
+  if (!me.user && pack && (shop.enabled || shop.mode)) return show(el('p', {}, 'Sign in (or make a free account) so the pack goes to your account.'),
+                           el('div', {}, el('a', { class: 'btn support', href: '/login?next=' + encodeURIComponent(location.pathname + location.search) }, 'Sign in to buy')));
+  if (!shop.enabled || !pack || !me.user) return show(note('Purchases aren’t switched on yet. Check back soon!'));
+
+  // NOT id="paypal": browsers turn element ids into globals, and PayPal's script treats window.paypal as an old copy of itself
+  const box = el('div', { id: 'pay-buttons' }), msg = note('');
+  show(shop.mode === 'sandbox' ? el('div', { class: 'test' }, 'TEST MODE (only testers see this): PayPal sandbox, no real money. Pay with a sandbox test buyer account.') : null,
+       el('p', { class: 'fine' }, `Buying as ${me.user.username}. One-time payment of $${pack.price} ${pack.currency}.`), box, msg);
+  let paypal;
+  try { paypal = await loadPayPal(shop.clientId, pack.currency); }
+  catch (e) { msg.className = 'msg err'; msg.textContent = 'PayPal couldn’t load. Check your connection or ad blocker, then reload this page.'; return; }
+
+  paypal.Buttons({
+    style: { layout: 'vertical', color: 'gold', shape: 'rect', label: 'paypal', height: 45 },
+    // our server creates the order (the price is set there, not in this page)
+    async createOrder() {
+      msg.className = 'msg'; msg.textContent = '';
+      const r = await post('/api/shop/order', { product: 'supporter' });
+      if (r.status === 409 && r.data.code === 'owned') { thanks(); throw new Error('handled'); }
+      if (!r.ok || !r.data.id) {
+        msg.className = 'msg' + (r.data.code === 'pending' ? '' : ' err');
+        msg.textContent = r.data.error || 'PayPal couldn’t start the payment. Please try again in a moment.';
+        throw new Error('handled');
+      }
+      return r.data.id;
+    },
+    // our server collects the payment and checks it with PayPal before unlocking anything
+    async onApprove(data, actions) {
+      msg.className = 'msg'; msg.textContent = 'Finishing your payment…';
+      const unsure = () => { // after approving, a lost connection or server hiccup does NOT mean "not charged"
+        box.hidden = true; msg.className = 'msg err';
+        msg.textContent = 'We couldn’t confirm your payment yet. Please don’t pay again: reload this page in a minute to check. If it went through, your pack will be there.';
+      };
+      let r;
+      try { r = await post('/api/shop/capture', { orderId: data.orderID }); } catch (e) { return unsure(); }
+      if (r.status >= 500) return unsure();
+      if (r.data.restart) { msg.className = 'msg err'; msg.textContent = r.data.error || 'That payment method was declined. Please pick another one.'; return actions.restart(); }
+      if (r.ok && r.data.status === 'completed') return thanks();
+      if (r.status === 409 && r.data.code === 'busy') { msg.className = 'msg'; msg.textContent = r.data.error; return; }
+      if (r.ok && r.data.status === 'pending') {
+        msg.className = 'msg'; msg.textContent = 'PayPal is still processing your payment. Your pack unlocks as soon as it clears: we’ll pick it up automatically.';
+        return;
+      }
+      msg.className = 'msg err'; msg.textContent = r.data.error || 'Something went wrong finishing the payment. You have not been given the pack yet; if PayPal charged you, it will be sorted out.';
+    },
+    onCancel() { msg.className = 'msg'; msg.textContent = 'Payment cancelled. You have not been charged.'; },
+    onError(err) {
+      if (String(err && err.message) === 'handled') return; // we already said what happened
+      msg.className = 'msg err'; msg.textContent = 'PayPal had a problem. You have not been charged. Please try again in a moment.';
+    },
+  }).render('#pay-buttons').catch(() => { msg.className = 'msg err'; msg.textContent = 'PayPal’s buttons couldn’t be shown. Please reload this page.'; });
+}
+load().catch(() => show(note('Couldn’t load the shop. Please reload the page.', 'err')));
+</script>
+</body>
+</html>
