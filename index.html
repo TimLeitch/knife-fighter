@@ -1,0 +1,1656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knife Thrower</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: radial-gradient(ellipse at 50% 120%, #1a2030, #0b0e14);
+    height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #dfe6f2;
+    overflow: hidden; user-select: none; -webkit-user-select: none;
+  }
+  canvas {
+    display: block; border-radius: 10px;
+    width: min(calc(100vw - 32px), calc((100vh - 72px) * 16 / 9));
+    height: auto; aspect-ratio: 16 / 9;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+    background: #10131a;
+    cursor: none; touch-action: none;
+  }
+  #controls {
+    font-size: 12px; opacity: .55; letter-spacing: 1px;
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; padding: 0 16px;
+  }
+  kbd {
+    background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+    border-radius: 4px; padding: 1px 6px; font-family: inherit; margin: 0 1px;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="540"></canvas>
+<div id="controls">
+  <span><kbd>Mouse</kbd> aim</span>
+  <span><kbd>Click</kbd> throw (hold = power)</span>
+  <span><kbd>Right-click</kbd>/<kbd>Space</kbd> deflect incoming knives</span>
+  <span><kbd>P</kbd> pause</span>
+  <span><kbd>M</kbd> mute</span>
+</div>
+
+<script>
+"use strict";
+// ======================================================================
+//  KNIFE THROWER — first person. Aim, charge, throw. Deflect knives
+//  tossed at you, clear waves before they reach you, and chase high
+//  scores on the target range.
+// ======================================================================
+
+// ============ CONSTANTS ============
+const W = 960, H = 540;
+const CX = W / 2, HOR = 248;   // screen centre / horizon line
+const F = 600;                 // focal length: pixels per metre at 1 m
+const EYE = 1.6;               // camera height in metres
+const DT = 1 / 60;
+const TAU = Math.PI * 2;
+const FONT = "'Segoe UI', system-ui, sans-serif";
+const ARENA_Z = 36;            // back fence
+const MELEE_Z = 2.2;           // distance a rusher swipes from
+const HOLD_Z = 4.6;            // where attackers wait their turn
+
+const KNIFE = {
+  speed: 24, powerSpeed: 36,   // m/s
+  gravity: 2.2,                // gentle drop: long throws need a little lift
+  chargeDelay: 0.1, chargeTime: 0.42,
+  cooldown: 0.16,
+  returnTime: 2.2,             // missed knives come back to the belt after this
+};
+const DEFLECT = { time: 0.22, cooldown: 0.4, deflectZ: 6.5, deflectPx: 140 };
+const MAX_HP = 5;
+const RANGE_TIME = 60;
+
+const TYPES = {
+  grunt:   { name: "Grunt",   hp: 2, speed: 2.2, sc: 1.0,  color: "#c96b3c", score: 100, melee: true, windup: 0.85, idle: [0.9, 1.6], dmg: 1 },
+  runner:  { name: "Runner",  hp: 1, speed: 4.0, sc: 0.92, color: "#d94a4a", score: 150, melee: true, windup: 0.7,  idle: [0.6, 1.1], dmg: 1 },
+  thrower: { name: "Thrower", hp: 2, speed: 1.5, sc: 1.0,  color: "#5fae6a", score: 200, ranged: true, dmg: 1 },
+  shield:  { name: "Shield",  hp: 2, speed: 1.7, sc: 1.05, color: "#8a9bb5", score: 250, melee: true, shield: true, windup: 0.8, idle: [1.0, 1.6], dmg: 1 },
+  brute:   { name: "Brute",   hp: 6, speed: 1.4, sc: 1.25, color: "#8d5cc4", score: 400, melee: true, windup: 0.95, idle: [1.2, 1.8], dmg: 2, combo: 0.45 },
+  ace:     { name: "Ace",     hp: 3, speed: 1.4, sc: 1.0,  color: "#d6b25e", score: 500, ranged: true, dmg: 1, throwGap: [1.4, 2.2] },
+};
+const WAVE_INTRO = {
+  1: "Throw them down before they reach you",
+  2: "Runners — fast and fragile, lead your throws",
+  3: "Throwers — right-click their knives to send them back",
+  4: "Shield bearers — aim for the head, or power-throw the shield",
+  5: "Brutes — soak hits; headshots still drop them fast",
+};
+const NEW_TYPE = { 2: "runner", 3: "thrower", 4: "shield", 5: "brute" };
+const ACES = [
+  ["Rook", "#d6b25e"], ["Viper", "#5fc49a"], ["Mako", "#5c8fd6"], ["Jinx", "#d65cb0"],
+  ["Sable", "#9aa3b5"], ["Kestrel", "#d68a3c"], ["Ghost", "#e8e8f0"], ["Brand", "#d64a3c"],
+];
+
+// ============ HELPERS ============
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+function weighted(table) {          // [[item, weight], ...]
+  let sum = 0;
+  for (const [, w] of table) sum += w;
+  let r = Math.random() * sum;
+  for (const [item, w] of table) if ((r -= w) <= 0 && w > 0) return item;
+  return table[0][0];
+}
+function inRect(px, py, r) { return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h; }
+function loadBest(key) { try { return Number(localStorage.getItem(key)) || 0; } catch (e) { return 0; } }
+function saveBest(key, v) { try { localStorage.setItem(key, String(v)); } catch (e) { /* storage unavailable */ } }
+
+// World (x right, y up from the ground, z away from you) → screen.
+function proj(x, y, z) {
+  const s = F / Math.max(z, 0.08);
+  return { x: CX + x * s, y: HOR - (y - EYE) * s, s };
+}
+
+// ============ INPUT ============
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const keys = {}, pressed = {};
+const mouse = { x: CX, y: HOR + 40, down: false, pressed: false, released: false, rpressed: false };
+
+addEventListener("keydown", e => {
+  if (!keys[e.code]) pressed[e.code] = true;
+  keys[e.code] = true;
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+});
+addEventListener("keyup", e => { keys[e.code] = false; });
+addEventListener("blur", () => {
+  for (const k in keys) keys[k] = false;
+  mouse.down = false; game.charging = false;
+  if (game.state === "play") game.state = "paused";
+});
+function trackPointer(e) {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) * W / r.width;
+  mouse.y = (e.clientY - r.top) * H / r.height;
+}
+addEventListener("pointermove", trackPointer);
+canvas.addEventListener("pointerdown", e => {
+  trackPointer(e);
+  sfx.ensure();
+  if (e.button === 2) mouse.rpressed = true;
+  else if (e.button === 0) { mouse.down = true; mouse.pressed = true; }
+  e.preventDefault();
+});
+addEventListener("pointerup", e => {
+  if (e.button === 0 && mouse.down) { mouse.down = false; mouse.released = true; }
+});
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+function clearInput() {
+  for (const k in pressed) delete pressed[k];
+  mouse.pressed = mouse.released = mouse.rpressed = false;
+}
+
+// ============ AUDIO (synthesized, no assets) ============
+const sfx = (() => {
+  let ac = null, master = null, noiseBuf = null, muted = false;
+  function ensure() {
+    if (!ac) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      try {
+        ac = new AC();
+        master = ac.createGain();
+        master.gain.value = 0.45;
+        master.connect(ac.destination);
+      } catch (e) { ac = null; return; }
+    }
+    if (ac.state === "suspended") ac.resume();
+  }
+  function tone(freq, dur, { type = "sine", vol = 0.2, slide = 0, delay = 0 } = {}) {
+    if (!ac || muted) return;
+    const t0 = ac.currentTime + delay;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, t0);
+    if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.connect(g).connect(master);
+    o.start(t0); o.stop(t0 + dur + 0.03);
+  }
+  function noise(dur, { vol = 0.2, freq = 1000, q = 1, filter = "bandpass", slide = 0, delay = 0 } = {}) {
+    if (!ac || muted) return;
+    if (!noiseBuf) {
+      noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const t0 = ac.currentTime + delay;
+    const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    src.buffer = noiseBuf;
+    f.type = filter; f.Q.value = q;
+    f.frequency.setValueAtTime(freq, t0);
+    if (slide) f.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(f).connect(g).connect(master);
+    src.start(t0, Math.random() * 0.5); src.stop(t0 + dur + 0.03);
+  }
+  const notes = (list, o) => list.forEach((f, i) => tone(f, o.dur, { ...o, delay: i * o.step }));
+  return {
+    ensure,
+    get muted() { return muted; },
+    toggle() { muted = !muted; },
+    whoosh(power) {
+      noise(power ? 0.2 : 0.14, { vol: 0.2, freq: 700, slide: power ? 4200 : 3000, q: 1.4 });
+      if (power) tone(160, 0.18, { type: "sawtooth", vol: 0.05, slide: 420 });
+    },
+    incoming() { noise(0.25, { vol: 0.12, freq: 2400, slide: 900, q: 2 }); },
+    thunk() { tone(170, 0.09, { type: "triangle", vol: 0.32, slide: 70 }); noise(0.05, { vol: 0.2, freq: 700, filter: "lowpass" }); },
+    dirt() { noise(0.07, { vol: 0.16, freq: 450, filter: "lowpass" }); tone(110, 0.06, { vol: 0.14, slide: 60 }); },
+    clank() {
+      tone(1250, 0.16, { type: "square", vol: 0.05, slide: 1050 });
+      tone(1900, 0.13, { type: "triangle", vol: 0.08 });
+      noise(0.04, { vol: 0.14, freq: 5000, filter: "highpass" });
+    },
+    hit() { noise(0.09, { vol: 0.3, freq: 520, filter: "lowpass" }); tone(210, 0.08, { type: "square", vol: 0.07, slide: 90 }); },
+    headshot() { this.hit(); tone(900, 0.14, { vol: 0.14, slide: 1600, delay: 0.03 }); },
+    pop() { noise(0.07, { vol: 0.35, freq: 2200, q: 0.7 }); tone(520, 0.05, { vol: 0.14, slide: 160 }); },
+    shatter() { noise(0.22, { vol: 0.3, freq: 4200, q: 0.6 }); tone(2400, 0.08, { type: "triangle", vol: 0.06, slide: 3200 }); },
+    crack() { noise(0.16, { vol: 0.3, freq: 900, q: 0.8 }); tone(140, 0.12, { type: "triangle", vol: 0.2, slide: 60 }); },
+    coin() { tone(1320, 0.08, { type: "square", vol: 0.05 }); tone(1980, 0.18, { type: "square", vol: 0.05, delay: 0.07 }); },
+    bullseye() { tone(1047, 0.14, { type: "triangle", vol: 0.14 }); tone(1568, 0.22, { type: "triangle", vol: 0.12, delay: 0.07 }); },
+    hurt() { tone(240, 0.28, { type: "sawtooth", vol: 0.14, slide: 80 }); noise(0.12, { vol: 0.2, freq: 300, filter: "lowpass" }); },
+    empty() { tone(320, 0.05, { type: "square", vol: 0.05 }); tone(240, 0.05, { type: "square", vol: 0.05, delay: 0.06 }); },
+    slash() { noise(0.1, { vol: 0.2, freq: 2500, slide: 6000, filter: "highpass" }); },
+    swing() { noise(0.18, { vol: 0.2, freq: 900, slide: 2600, q: 1.2 }); },
+    ready() { tone(700, 0.06, { type: "square", vol: 0.03 }); },
+    guard() { noise(0.06, { vol: 0.08, freq: 1500 }); },
+    parry() {
+      tone(1800, 0.3, { type: "triangle", vol: 0.14 });
+      tone(2700, 0.2, { vol: 0.08, delay: 0.01 });
+      noise(0.06, { vol: 0.22, freq: 6000, filter: "highpass" });
+    },
+    block() { tone(800, 0.12, { type: "square", vol: 0.05, slide: 600 }); noise(0.05, { vol: 0.18, freq: 3000, filter: "highpass" }); },
+    deflect() { this.clank(); tone(900, 0.16, { type: "triangle", vol: 0.1, slide: 1800 }); },
+    tick() { tone(1400 + Math.random() * 400, 0.03, { vol: 0.05 }); },
+    wave() { notes([523, 659, 784], { type: "triangle", vol: 0.1, dur: 0.12, step: 0.09 }); },
+    clear() { notes([523, 659, 784, 1047], { type: "triangle", vol: 0.11, dur: 0.14, step: 0.08 }); },
+    over() { notes([392, 330, 262, 196], { type: "triangle", vol: 0.12, dur: 0.22, step: 0.16 }); },
+  };
+})();
+
+// ============ EFFECTS (screen space) ============
+function burst(x, y, n, color, o = {}) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), sp = rand(o.min || 1.5, o.max || 6);
+    game.particles.push({
+      x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (o.up || 0),
+      life: rand(0.35, 0.7) * (o.life || 1), age: 0, color, size: rand(1.5, 3.5) * (o.size || 1), grav: o.grav ?? 0.25,
+    });
+  }
+}
+function popup(x, y, str, color = "#dfe6f2", size = 18) {
+  game.popups.push({ x, y, str, color, size, t: 0 });
+}
+
+// ============ KNIVES ============
+class Knife {
+  constructor(o) {
+    this.x = o.x; this.y = o.y; this.z = o.z;
+    this.vx = o.vx; this.vy = o.vy; this.vz = o.vz;
+    this.owner = o.owner;          // "player" | "enemy"
+    this.mine = !!o.mine;          // goes back on your belt eventually
+    this.power = !!o.power;
+    this.src = o.src || null;      // enemy who threw it
+    this.from = o.from || null;    // screen point it left the hand from
+    this.deflected = false;
+    this.state = "fly";            // fly | stuck | fall | gone
+    this.age = 0; this.timer = 0;
+    this.spin = rand(0, TAU);      // only used once a knife bounces off and tumbles
+    this.host = null; this.lx = 0; this.ly = 0; this.onShield = false;
+    this.tilt = { x: rand(-0.7, 0.7), y: rand(0.15, 0.8) };
+    this.trail = [];
+    this.warned = false;
+  }
+  update() {
+    this.age += DT;
+    if (this.state === "fly") this.fly();
+    else if (this.state === "stuck") {
+      if (this.host.kind === "ground" || this.host.kind === "wall") {
+        this.timer += DT;
+        if (this.timer > KNIFE.returnTime) this.retire();
+      }
+    } else if (this.state === "fall") {
+      this.vy -= 9.8 * DT;
+      this.x += this.vx * DT; this.y += this.vy * DT; this.z += this.vz * DT;
+      this.spin += 12 * DT; this.timer += DT;
+      if (this.y < 0) { this.y = 0; this.vy *= -0.3; this.vx *= 0.5; this.vz *= 0.5; }
+      if (this.timer > 1) this.retire();
+    }
+  }
+  retire() {
+    if (this.state === "gone") return;
+    this.state = "gone";
+    if (this.mine) game.returnKnife();
+  }
+  bounce() {
+    this.state = "fall"; this.timer = 0;
+    this.vx = rand(-2, 2); this.vy = rand(1.5, 3); this.vz = rand(-1.5, -0.5);
+  }
+  stickTo(host, lx, ly, onShield = false) {
+    this.state = "stuck"; this.host = host; this.lx = lx; this.ly = ly; this.onShield = onShield;
+    this.tilt.x = clamp(-this.vx / 12 + rand(-0.3, 0.3), -0.8, 0.8);
+  }
+  fly() {
+    const N = 4, h = DT / N;
+    const sp = proj(this.x, this.y, this.z);
+    this.trail.push({ x: sp.x, y: sp.y });
+    if (this.trail.length > 6) this.trail.shift();
+    if (this.owner === "enemy" && !this.warned && this.z < 7) { this.warned = true; sfx.incoming(); }
+    for (let i = 0; i < N && this.state === "fly"; i++) {
+      const px = this.x, py = this.y, pz = this.z;
+      this.vy -= KNIFE.gravity * h;
+      this.x += this.vx * h; this.y += this.vy * h; this.z += this.vz * h;
+      if (this.owner === "player") {
+        if (this.collide(px, py, pz)) return;
+      } else if (this.z <= 0.3) {
+        this.state = "gone";
+        game.hurt(1, "C");
+        return;
+      }
+      if (this.y <= 0) {
+        const t = py / (py - this.y || 1e-6);
+        this.x = px + (this.x - px) * t; this.z = pz + (this.z - pz) * t; this.y = 0;
+        if (this.owner === "player") {
+          this.stickTo({ kind: "ground" }, 0, 0);
+          sfx.dirt(); if (!this.scored) game.miss();
+          const p = proj(this.x, 0, this.z);
+          burst(p.x, p.y, 5, "#6b5440", { max: 2.5, size: 0.8 });
+        } else this.bounce();
+        return;
+      }
+      if (this.z >= ARENA_Z - 0.05) {
+        this.z = ARENA_Z - 0.05;
+        this.stickTo({ kind: "wall" }, 0, 0);
+        sfx.thunk(); if (!this.scored) game.miss();
+        return;
+      }
+      if (this.z > 80 || this.z < -2 || Math.abs(this.x) > 40) { this.retire(); return; }
+    }
+  }
+  collide(px, py, pz) {
+    let best = null;
+    for (const list of [game.enemies, game.targets]) {
+      for (const o of list) {
+        const hit = o.intersect(px, py, pz, this.x, this.y, this.z);
+        if (hit && (!best || hit.z < best.z)) best = hit;
+      }
+    }
+    if (!best) return false;
+    const consumed = best.obj.onKnife(this, best) !== false;
+    if (!consumed) this.scored = true;   // passed through a balloon / bottle / coin
+    return consumed;
+  }
+  draw() {
+    if (this.state === "gone") return;
+    const p = proj(this.x, this.y, this.z);
+    if (this.state === "stuck") {
+      ctx.save();
+      ctx.globalAlpha = 1 - clamp((this.timer - KNIFE.returnTime + 0.4) / 0.4, 0, 1);
+      drawStuckKnife(p.x, p.y, p.s, this.tilt);
+      ctx.restore();
+      return;
+    }
+    let x = p.x, y = p.y;
+    if (this.from && this.owner === "player" && !this.deflected) {
+      const u = clamp(this.age / 0.2, 0, 1), w = (1 - u) * (1 - u);
+      x = lerp(x, this.from.x, w); y = lerp(y, this.from.y, w);
+    }
+    const scale = clamp(p.s * 0.3 / 28, 0.45, 4.2);   // floor keeps far knives easy to follow
+    const hostile = this.owner === "enemy";
+    if (this.state === "fly" && (this.power || this.deflected) && this.trail.length > 2) {
+      ctx.strokeStyle = this.deflected ? "rgba(111,211,255,.5)" : "rgba(255,157,92,.5)";
+      ctx.lineWidth = Math.max(1.5, scale * 2); ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(this.trail[0].x, this.trail[0].y);
+      for (const q of this.trail) ctx.lineTo(q.x, q.y);
+      ctx.lineTo(x, y); ctx.stroke();
+    }
+    if (hostile && this.state === "fly" && this.z < 9) {
+      const pulse = 0.5 + 0.5 * Math.sin(game.t * 22);
+      ctx.strokeStyle = `rgba(255,70,80,${0.45 + pulse * 0.4})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 18 + scale * 14, 0, TAU); ctx.stroke();
+    }
+    let ang = this.spin, stretch = 1;
+    if (this.state === "fly") {
+      // Point-first. Your own throws point along the line from your hand, so they read as flying
+      // away from you; everything else points along its on-screen path (tip leading).
+      if (this.from && this.owner === "player" && !this.deflected) {
+        ang = Math.atan2(p.y - this.from.y, p.x - this.from.x);
+        stretch = clamp(1 - this.age * 0.9, 0.6, 1);
+      } else {
+        const v = Math.hypot(this.vx, this.vy, this.vz) || 1, L = 0.3;
+        const q = proj(this.x + this.vx / v * L, this.y + this.vy / v * L, this.z + this.vz / v * L);
+        const len = Math.hypot(q.x - p.x, q.y - p.y);
+        if (len > 0.5) this.lastAng = Math.atan2(q.y - p.y, q.x - p.x);
+        ang = this.lastAng ?? -Math.PI / 2;
+        stretch = clamp(len / (L * p.s), 0.6, 1);
+      }
+    }
+    const glow = this.state !== "fly" ? null : hostile ? "#ff4d5a" : this.deflected ? "#6fd3ff" : this.power ? "#ff9d5c" : null;
+    drawKnife(ctx, x, y, ang, { scale, glow, stretch });
+  }
+}
+
+// ============ ENEMIES ============
+const SHIELD = { x: -0.2, y: 1.1, r: 0.32 };
+
+class Enemy {
+  constructor(key, x, z, over = {}) {
+    this.key = key;
+    this.t = { ...TYPES[key], ...over };
+    this.x = x; this.z = z; this.sc = this.t.sc;
+    this.hp = this.maxHp = this.t.hp;
+    this.shieldHp = this.t.shield ? 3 : 0;
+    this.state = "live";         // live | dying
+    this.engaged = false; this.slot = -1;
+    this.phase = "idle"; this.pt = 0; this.wt = 1; this.dir = "R";
+    this.comboLeft = 0;
+    this.alpha = 0; this.flash = 0; this.walk = rand(0, 6); this.age = 0; this.moving = true;
+    this.laneX = rand(-2.6, 2.6); this.holdZ = HOLD_Z + rand(0, 1.8);
+    this.standZ = rand(16, 22); this.throwT = rand(1.2, 2.2);
+    this.dieT = 0; this.remove = false; this.flinch = 0;
+  }
+  get alive() { return this.state !== "dying"; }
+
+  update() {
+    this.age += DT;
+    this.flash = Math.max(0, this.flash - DT);
+    this.flinch = Math.max(0, this.flinch - DT);
+    if (this.state === "dying") {
+      this.dieT += DT;
+      if (this.dieT > 0.9) this.remove = true;
+      return;
+    }
+    this.alpha = Math.min(1, this.alpha + DT * 2.5);
+    if (this.t.ranged) { this.updateRanged(); return; }
+    if (!this.engaged) {
+      if (this.slot < 0) this.slot = game.claimSlot(this);
+      const tz = this.slot >= 0 ? MELEE_Z : this.holdZ;
+      const tx = this.slot >= 0 ? game.slotX(this.slot) : this.laneX;
+      this.moveTo(tx, tz);
+      if (this.slot >= 0 && Math.abs(this.z - MELEE_Z) < 0.03 && Math.abs(this.x - tx) < 0.06) {
+        this.engaged = true; this.phase = "idle"; this.pt = rand(0.35, 0.7);
+      }
+    } else {
+      this.x = lerp(this.x, game.slotX(this.slot), 0.1);
+      this.moving = false;
+      this.walk += DT * 1.5;
+      this.updateMelee();
+    }
+  }
+  moveTo(tx, tz) {
+    const sp = this.t.speed * DT;
+    const dz = tz - this.z, dx = tx - this.x;
+    this.z += clamp(dz, -sp, sp);
+    this.x += clamp(dx, -sp * 0.6, sp * 0.6);
+    this.moving = Math.abs(dz) > 0.01 || Math.abs(dx) > 0.01;
+    this.walk += DT * (this.moving ? this.t.speed * 4.5 : 1.5);
+  }
+  updateMelee() {
+    this.pt -= DT;
+    switch (this.phase) {
+      case "idle":
+        if (this.pt <= 0) this.startWindup();
+        break;
+      case "windup":
+        if (this.pt <= 0) this.strike();
+        break;
+      case "strike":
+        if (this.pt <= 0) {
+          if (this.comboLeft > 0) { this.comboLeft--; this.startWindup(0.7, true); }
+          else { this.phase = "recover"; this.pt = 0.5; }
+        }
+        break;
+      case "recover":
+        if (this.pt <= 0) { this.phase = "idle"; this.pt = rand(...this.t.idle) * game.pace; }
+        break;
+    }
+  }
+  startWindup(mult = 1, force = false) {
+    // Stagger rushers so they don't all swipe on the same frame.
+    if (!force && game.enemies.some(e => e !== this && e.engaged && e.alive && e.phase === "windup")) {
+      this.pt = 0.4; return;
+    }
+    this.phase = "windup";
+    this.dir = weighted([["L", 2], ["R", 2], ["H", 1]]);
+    this.wt = this.pt = (this.t.windup || 0.8) * game.pace * mult;
+    if (!force) this.comboLeft = Math.random() < (this.t.combo || 0) ? 1 : 0;
+    sfx.ready();
+  }
+  strike() {
+    this.phase = "strike"; this.pt = 0.22;
+    sfx.swing();
+    game.hurt(this.t.dmg, this.dir);
+  }
+
+  updateRanged() {
+    if (this.z > this.standZ + 0.02) { this.moveTo(this.laneX, this.standZ); return; }
+    this.moving = false;
+    this.walk += DT * 1.5;
+    if (this.phase === "windup") {
+      this.pt -= DT;
+      if (this.pt <= 0) { this.throwKnife(); this.phase = "recover"; this.pt = 0.45; }
+    } else if (this.phase === "recover") {
+      this.pt -= DT;
+      if (this.pt <= 0) this.phase = "idle";
+    } else {
+      this.throwT -= DT;
+      const busy = game.knives.some(k => k.src === this && k.state === "fly" && k.owner === "enemy");
+      if (this.throwT <= 0 && !busy) {
+        this.phase = "windup"; this.dir = "R";
+        this.wt = this.pt = 0.65 * game.pace;
+        const gap = this.t.throwGap || [2.2, 3.4];
+        this.throwT = rand(gap[0], gap[1]) * game.pace;
+      }
+    }
+  }
+  throwKnife() {
+    const hx = this.x + 0.6 * this.sc, hy = 1.8 * this.sc, hz = this.z - 0.1;
+    const tx = rand(-0.25, 0.25), ty = EYE - 0.1 + rand(-0.12, 0.08), tz = 0.15;
+    const speed = Math.min(17, 12 + game.wave * 0.4);
+    const T = Math.hypot(tx - hx, ty - hy, tz - hz) / speed;
+    game.knives.push(new Knife({
+      x: hx, y: hy, z: hz,
+      vx: (tx - hx) / T, vy: (ty - hy) / T + 0.5 * KNIFE.gravity * T, vz: (tz - hz) / T,
+      owner: "enemy", src: this,
+    }));
+    sfx.whoosh(false);
+  }
+
+  // Local (unscaled metres) position of the knife hand.
+  handLocal() {
+    if (this.state === "dying") return { x: 0.34, y: 1.0 };
+    switch (this.phase) {
+      case "windup":
+        return this.dir === "L" ? { x: -0.6, y: 1.82 } : this.dir === "R" ? { x: 0.62, y: 1.8 } : { x: 0.1, y: 2.12 };
+      case "strike": return { x: 0.05, y: 1.4 };
+      default: return { x: 0.34, y: 1.05 + Math.sin(this.walk) * 0.02 };
+    }
+  }
+  view() {
+    const p = proj(this.x, 0, this.z);
+    const S = p.s * this.sc;
+    const dk = this.state === "dying" ? Math.min(1, this.dieT / 0.45) : 0;
+    const squash = 1 - dk * 0.82;
+    const ox = this.flinch * Math.sin(this.age * 60) * 0.25 * S;
+    const bob = this.moving ? Math.abs(Math.sin(this.walk)) * 0.04 : Math.sin(this.walk) * 0.01;
+    return { p, S, squash, ox, bob };
+  }
+  toScreen(lx, ly, v = this.view()) {
+    return { x: v.p.x + v.ox + lx * v.S, y: v.p.y - (ly + v.bob) * v.S * v.squash };
+  }
+  handScreen() {
+    const h = this.handLocal();
+    return this.toScreen(h.x, h.y);
+  }
+  intersect(px, py, pz, x, y, z) {
+    if (!this.alive || this.alpha < 0.5) return null;
+    const planes = [];
+    if (this.shieldHp > 0) planes.push(["shield", this.z - 0.28 * this.sc]);
+    planes.push(["body", this.z]);
+    for (const [part, z0] of planes) {
+      if (!(pz - 0.15 < z0 && z >= z0)) continue;
+      const t = clamp((z0 - pz) / (z - pz || 1e-6), 0, 1);
+      const ix = px + (x - px) * t, iy = py + (y - py) * t;
+      const lx = (ix - this.x) / this.sc, ly = iy / this.sc;
+      if (part === "shield") {
+        if (Math.hypot(lx - SHIELD.x, ly - SHIELD.y) < SHIELD.r) return { obj: this, part, z: z0, lx, ly };
+        continue;
+      }
+      if (Math.hypot(lx, ly - 1.64) < 0.16) return { obj: this, part: "head", z: z0, lx, ly };
+      if (Math.abs(lx) < 0.3 && ly > 0.84 && ly < 1.5) return { obj: this, part: "body", z: z0, lx, ly };
+      if (Math.abs(lx) < 0.22 && ly >= 0 && ly <= 0.86) return { obj: this, part: "body", z: z0, lx, ly };
+    }
+    return null;
+  }
+  onKnife(k, hit) {
+    const g = game;
+    const sp = this.toScreen(hit.lx, hit.ly);
+    if (hit.part === "shield") {
+      k.stickTo(this, hit.lx, hit.ly, true);
+      this.shieldHp--;
+      sfx.clank();
+      burst(sp.x, sp.y, 8, "#e8eef8", { max: 5 });
+      if (this.shieldHp <= 0) {
+        sfx.crack();
+        popup(sp.x, sp.y - 20, "SHIELD BROKEN", "#a9b8d0", 18);
+        for (const o of g.knives) if (o.host === this && o.onShield && o.state === "stuck") o.bounce();
+        burst(sp.x, sp.y, 18, "#8a9bb5", { max: 7 });
+      } else popup(sp.x, sp.y - 16, "BLOCKED", "#a9b8d0", 15);
+      g.stats.hits++;
+      return;
+    }
+    const head = hit.part === "head";
+    let dmg = head ? 3 : k.power ? 2 : 1;
+    if (k.deflected) dmg = 3;
+    k.stickTo(this, hit.lx, hit.ly);
+    g.stats.hits++;
+    if (head) { g.stats.heads++; sfx.headshot(); } else sfx.hit();
+    burst(sp.x, sp.y, head ? 14 : 8, "#c23b3b", { max: head ? 6 : 4, grav: 0.35 });
+    // A solid hit interrupts their windup so you can finish them with another throw.
+    if (this.phase === "windup" || this.phase === "strike") {
+      this.phase = "recover"; this.pt = 0.55; this.comboLeft = 0;
+    }
+    this.hurt(dmg, { head, deflect: k.deflected, sx: sp.x, sy: sp.y });
+  }
+  hurt(dmg, info) {
+    const g = game;
+    this.hp -= dmg;
+    this.flash = 0.12;
+    g.bumpCombo();
+    if (this.hp <= 0) { this.die(info); return; }
+    this.flinch = 0.18;
+    const label = info.head ? "HEADSHOT" : null;
+    g.addScore(15, info.sx, info.sy - 20, label, "#ff9d9d", 16);
+  }
+  die(info) {
+    const g = game;
+    this.state = "dying"; this.dieT = 0;
+    if (this.slot >= 0) { g.slots[this.slot] = null; this.slot = -1; }
+    this.engaged = false;
+    g.stats.kills++;
+    let pts = this.t.score, label = "DOWN";
+    if (info.head) { pts *= 1.5; label = "HEADSHOT"; }
+    if (info.deflect) { pts += 150; label = "RETURN TO SENDER"; }
+    g.addScore(Math.round(pts), info.sx, info.sy - 26, label, "#ffd84d", 22);
+    sfx.crack();
+    g.shake = Math.max(g.shake, 5);
+  }
+}
+
+// ============ RANGE TARGETS ============
+class Target {
+  constructor(kind, o) {
+    this.kind = kind;
+    Object.assign(this, { x: 0, y: 1.4, z: 10, r: 0.42, vx: 0, vy: 0, life: 7, sway: 0, swaySpeed: 1 }, o);
+    this.baseX = this.x;
+    this.age = 0; this.rise = kind === "board" ? 0 : 1; this.down = 0;
+    this.state = "up"; this.hits = 0; this.remove = false;
+    this.spin = rand(0, TAU);
+  }
+  update() {
+    this.age += DT;
+    if (this.kind === "board") {
+      if (this.state === "up") {
+        this.rise = Math.min(1, this.rise + DT * 4);
+        if (this.sway) this.x = this.baseX + Math.sin(this.age * this.swaySpeed) * this.sway;
+        if (this.age > this.life || this.hits >= 3) this.state = "down";
+      } else {
+        this.down += DT;
+        this.rise = Math.max(0, 1 - this.down / 0.3);
+        if (this.down > 0.35) this.remove = true;
+      }
+    } else if (this.kind === "balloon") {
+      this.y += this.vy * DT;
+      this.x += Math.sin(this.age * 1.3 + this.spin) * 0.004;
+      if (this.y > 6 || this.state !== "up") this.remove = true;
+    } else if (this.kind === "bottle") {
+      this.vy -= 9.8 * DT;
+      this.x += this.vx * DT; this.y += this.vy * DT;
+      this.spin += 8 * DT;
+      if (this.y < -0.3 || this.state !== "up") this.remove = true;
+    } else if (this.kind === "coin") {
+      this.y = this.baseY + Math.sin(this.age * 2.5) * 0.06;
+      this.spin += 4 * DT;
+      if (this.age > this.life || this.state !== "up") this.remove = true;
+    }
+  }
+  intersect(px, py, pz, x, y, z) {
+    if (this.state !== "up" || this.rise < 0.7) return null;
+    const z0 = this.z;
+    if (!(pz - 0.15 < z0 && z >= z0)) return null;
+    const t = clamp((z0 - pz) / (z - pz || 1e-6), 0, 1);
+    const ix = px + (x - px) * t, iy = py + (y - py) * t;
+    const d = Math.hypot(ix - this.x, iy - this.y);
+    return d < this.r ? { obj: this, z: z0, lx: ix - this.x, ly: iy - this.y, d } : null;
+  }
+  onKnife(k, hit) {
+    const g = game;
+    const c = proj(this.x, this.y, this.z);
+    const sx = c.x + hit.lx * c.s, sy = c.y - hit.ly * c.s;
+    g.stats.hits++;
+    const distMul = 0.6 + this.z / 10;
+    if (this.kind === "board") {
+      k.stickTo(this, hit.lx, hit.ly);
+      this.hits++;
+      const d = hit.d / this.r;
+      let base, label, col;
+      if (d < 0.18) { base = 100; label = "BULLSEYE"; col = "#ffd84d"; g.stats.bulls++; sfx.bullseye(); burst(sx, sy, 16, "#ffd84d", { max: 6 }); }
+      else if (d < 0.45) { base = 50; label = null; col = "#ff8a7a"; sfx.thunk(); }
+      else if (d < 0.72) { base = 25; label = null; col = "#efe8da"; sfx.thunk(); }
+      else { base = 10; label = null; col = "#c9b08a"; sfx.thunk(); }
+      g.bumpCombo();
+      g.addScore(Math.round(base * distMul), sx, sy - 18, label, col, label ? 22 : 16);
+      burst(sx, sy, 5, "#8a6a44", { max: 3, size: 0.8 });
+      return true;
+    }
+    this.state = "hit";
+    g.bumpCombo();
+    if (this.kind === "balloon") {
+      sfx.pop();
+      burst(sx, sy, 16, this.color, { max: 7, grav: 0.1 });
+      g.addScore(Math.round(40 * distMul), sx, sy - 10, null, this.color, 17);
+    } else if (this.kind === "bottle") {
+      sfx.shatter();
+      burst(sx, sy, 20, "#7fe08a", { max: 8 });
+      g.addScore(Math.round(90 * distMul), sx, sy - 10, "SMASH", "#7fe08a", 20);
+    } else {
+      sfx.coin();
+      burst(sx, sy, 18, "#ffd84d", { max: 7, grav: 0.1 });
+      g.addScore(Math.round(120 * distMul), sx, sy - 10, "GOLD", "#ffd84d", 22);
+    }
+    return false;   // knife carries on through
+  }
+}
+
+// ============ GAME / STATE ============
+const game = {
+  mode: "fight",
+  state: "menu",          // menu | play | paused | over
+  t: 0,
+  best: { fight: loadBest("kf_best_fight"), range: loadBest("kf_best_range"), duel: loadBest("kf_best_duel") },
+  particles: [], popups: [], knives: [], enemies: [], targets: [],
+  slots: [null],
+  get mult() { return Math.min(5, 1 + Math.floor(this.combo / 4)); },
+  get hasKnife() { return this.mode === "range" || this.belt > 0; },
+
+  start(mode) {
+    this.mode = mode;
+    this.state = "play";
+    this.score = 0; this.combo = 0;
+    this.hp = MAX_HP; this.iframes = 0; this.hurtFlash = 0; this.shake = 0; this.scratch = null;
+    this.beltMax = mode === "fight" ? 8 : mode === "duel" ? 4 : 0;
+    this.belt = this.beltMax;
+    this.knives = []; this.enemies = []; this.targets = []; this.particles = []; this.popups = [];
+    this.slots = [null];
+    this.throwCD = 0; this.deflectCD = 0; this.deflectT = 0; this.deflectAt = { x: CX, y: HOR };
+    this.charging = false; this.chargeT = 0; this.throwAnim = 0;
+    this.banner = null;
+    this.wave = 0; this.duelN = 0; this.pace = 1; this.elapsed = 0;
+    this.stats = { thrown: 0, hits: 0, heads: 0, deflects: 0, kills: 0, bulls: 0, bestCombo: 0 };
+    if (mode === "fight") startWave(1);
+    else if (mode === "duel") startThrowdown(1);
+    else {
+      this.time = RANGE_TIME;
+      this.spawnT = 0.3; this.balloonT = 2; this.bottleT = 10; this.coinT = 8;
+      showBanner("TARGET RANGE", "60 seconds · unlimited knives · farther throws score more");
+      sfx.wave();
+    }
+  },
+  end() {
+    this.state = "over"; this.overT = 0; this.charging = false;
+    const prev = this.best[this.mode];
+    this.newBest = this.score > prev;
+    if (this.newBest) { this.best[this.mode] = this.score; saveBest("kf_best_" + this.mode, this.score); }
+    if (this.mode === "range") sfx.clear(); else sfx.over();
+  },
+  addScore(base, x, y, label, color, size) {
+    const pts = Math.round(base * this.mult);
+    this.score += pts;
+    popup(x, y, label ? `${label} +${pts}` : `+${pts}`, color, size);
+  },
+  bumpCombo() {
+    this.combo++;
+    this.stats.bestCombo = Math.max(this.stats.bestCombo, this.combo);
+  },
+  miss() { if (this.combo >= 4) popup(CX, HOR - 60, "COMBO LOST", "rgba(223,230,242,.6)", 14); this.combo = 0; },
+  returnKnife() { if (this.mode !== "range" && this.state === "play") this.belt = Math.min(this.beltMax, this.belt + 1); },
+  hurt(dmg, dir) {
+    if (this.state !== "play" || this.iframes > 0) return;
+    this.hp -= dmg;
+    this.iframes = 0.6; this.hurtFlash = 0.35; this.shake = 16;
+    this.combo = 0;
+    this.scratch = { t: 0.7, dir };
+    sfx.hurt();
+    if (this.hp <= 0) { this.hp = 0; this.end(); }
+  },
+  claimSlot(e) {
+    if (e.z > HOLD_Z + 4) return -1;
+    const i = this.slots.indexOf(null);
+    if (i >= 0) this.slots[i] = e;
+    return i;
+  },
+  slotX(i) { return this.slots.length === 1 ? 0 : i === 0 ? -0.6 : 0.6; },
+};
+
+function showBanner(title, sub, dur = 2.2) { game.banner = { title, sub, t: 0, dur }; }
+
+// ----- Knife Wave -----
+function buildWave(n) {
+  const total = 4 + n * 2;
+  const list = [];
+  if (NEW_TYPE[n]) list.push(NEW_TYPE[n], NEW_TYPE[n]);
+  let brutes = n >= 5 ? Math.min(3, Math.floor((n - 3) / 2)) : 0;
+  while (list.length < total) {
+    const k = weighted([
+      ["grunt", 5], ["runner", n >= 2 ? 3 : 0], ["thrower", n >= 3 ? 2.2 : 0],
+      ["shield", n >= 4 ? 2 : 0], ["brute", brutes > 0 ? 1 : 0],
+    ]);
+    if (k === "brute") brutes--;
+    list.push(k);
+  }
+  for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
+  if (n === 1) list.sort((a, b) => (a === "grunt" ? 0 : 1) - (b === "grunt" ? 0 : 1));
+  return list;
+}
+function startWave(n) {
+  const g = game;
+  g.wave = n; g.queue = buildWave(n);
+  g.wavePhase = "intro"; g.phaseT = 2.4;
+  g.pace = Math.max(0.6, 1 - 0.045 * (n - 1));
+  g.slots = new Array(n >= 4 ? 2 : 1).fill(null);
+  showBanner(`WAVE ${n}`, WAVE_INTRO[n] || "They keep coming — faster now");
+  sfx.wave();
+}
+function spawnEnemy(key) {
+  const e = new Enemy(key, rand(-3.2, 3.2), rand(25, 29));
+  if (e.t.ranged) e.laneX = rand(-3.5, 3.5);
+  game.enemies.push(e);
+}
+function updateWaves() {
+  const g = game;
+  if (g.wavePhase === "intro") {
+    if ((g.phaseT -= DT) <= 0) { g.wavePhase = "fight"; g.spawnT = 0; }
+  } else if (g.wavePhase === "fight") {
+    g.spawnT -= DT;
+    const alive = g.enemies.filter(e => e.alive).length;
+    const maxAlive = 3 + Math.floor(g.wave / 2);
+    if (g.queue.length && g.spawnT <= 0 && alive < maxAlive) {
+      spawnEnemy(g.queue.shift());
+      g.spawnT = Math.max(0.9, 2.6 - 0.15 * g.wave) * rand(0.8, 1.2);
+    }
+    if (!g.queue.length && !alive) {
+      g.wavePhase = "clear"; g.phaseT = 2.4;
+      const healed = g.hp < MAX_HP;
+      g.hp = Math.min(MAX_HP, g.hp + 1);
+      g.score += 250 * g.wave;
+      showBanner("WAVE CLEAR", `+${(250 * g.wave).toLocaleString()} bonus${healed ? " · +1 heart" : ""}`);
+      sfx.clear();
+    }
+  } else if ((g.phaseT -= DT) <= 0) startWave(g.wave + 1);
+}
+
+// ----- Throwdown (ranged ace duels) -----
+function startThrowdown(k) {
+  const g = game;
+  g.duelN = k; g.wave = k; g.pace = Math.max(0.55, 1 - 0.05 * (k - 1));
+  g.slots = [null];
+  g.wavePhase = "intro"; g.phaseT = 2.2;
+  const [name] = ACES[(k - 1) % ACES.length];
+  const tips = [
+    "Deflect their knives, then return fire",
+    "Hold click for a power throw — it hits harder",
+    "Headshots drop them fast",
+    "They throw quicker now — stay calm",
+    "Lead moving throws. Don't spam.",
+  ];
+  showBanner(`THROWDOWN ${k} · ${name.toUpperCase()}`, tips[Math.min(k - 1, tips.length - 1)]);
+  sfx.wave();
+}
+function updateThrowdown() {
+  const g = game;
+  if (g.wavePhase === "intro") {
+    if ((g.phaseT -= DT) <= 0) {
+      g.wavePhase = "fight";
+      const k = g.duelN;
+      const [, color] = ACES[(k - 1) % ACES.length];
+      const e = new Enemy("ace", 0, rand(16, 20), {
+        color, hp: 3 + k,
+        score: 500 * k,
+      });
+      e.laneX = 0; e.standZ = e.z;
+      e.throwT = 0.6;
+      g.enemies.push(e);
+    }
+  } else if (g.wavePhase === "fight") {
+    if (!g.enemies.some(e => e.alive) && g.enemies.length === 0) {
+      g.wavePhase = "clear"; g.phaseT = 2.4;
+      const healed = g.hp < MAX_HP;
+      g.hp = Math.min(MAX_HP, g.hp + 1);
+      g.score += 300 * g.duelN;
+      showBanner("ACE DOWN", `+${(300 * g.duelN).toLocaleString()} bonus${healed ? " · +1 heart" : ""}`);
+      sfx.clear();
+    }
+  } else if ((g.phaseT -= DT) <= 0) startThrowdown(g.duelN + 1);
+}
+
+// ----- Target Range -----
+const BALLOON_COLORS = ["#ff5d6c", "#ffd84d", "#6fd3ff", "#7fe08a", "#c08cff", "#ff9d5c"];
+function updateRange() {
+  const g = game;
+  g.time -= DT;
+  if (g.time <= 0) { g.time = 0; g.end(); return; }
+  if (g.time < 10 && Math.floor(g.time) !== Math.floor(g.time + DT)) sfx.tick();
+  const e = g.elapsed;
+  const boards = g.targets.filter(t => t.kind === "board" && t.state === "up").length;
+  if ((g.spawnT -= DT) <= 0 && boards < 3) {
+    const z = rand(5, Math.min(22, 10 + e * 0.2));
+    const moving = e > 18 && Math.random() < 0.45;
+    g.targets.push(new Target("board", {
+      x: clamp(rand(-0.5, 0.5) * z, -5, 5), y: rand(1.25, 1.75), z,
+      life: rand(5, 8) - Math.min(2, e / 30),
+      sway: moving ? rand(0.6, 1.4) : 0, swaySpeed: rand(0.9, 1.8),
+    }));
+    g.spawnT = rand(0.5, 1.1);
+  }
+  if ((g.balloonT -= DT) <= 0) {
+    const z = rand(7, 16);
+    g.targets.push(new Target("balloon", { x: clamp(rand(-0.5, 0.5) * z, -5, 5), y: 0.2, z, r: 0.22, vy: rand(0.6, 1.1), color: pick(BALLOON_COLORS) }));
+    g.balloonT = rand(1.5, 2.8);
+  }
+  if (e > 12 && (g.bottleT -= DT) <= 0) {
+    const side = Math.random() < 0.5 ? -1 : 1, z = rand(8, 12);
+    g.targets.push(new Target("bottle", { x: side * z * 0.75, y: 0.8, z, r: 0.16, vx: -side * rand(3, 4.2), vy: rand(5.2, 6.2) }));
+    g.bottleT = rand(3.5, 5.5);
+  }
+  if ((g.coinT -= DT) <= 0) {
+    const z = rand(18, 26), y = rand(1.8, 2.8);
+    g.targets.push(new Target("coin", { x: rand(-0.35, 0.35) * z, y, baseY: y, z, r: 0.14, life: 5 }));
+    g.coinT = rand(9, 13);
+  }
+}
+
+// ============ PLAYER ACTIONS ============
+const chargeFrac = () => clamp((game.chargeT - KNIFE.chargeDelay) / KNIFE.chargeTime, 0, 1);
+const HAND_REST = { x: 790, y: 478 };
+
+function tryThrow() {
+  const g = game;
+  if (g.throwCD > 0) return;
+  if (!g.hasKnife) { sfx.empty(); popup(mouse.x, mouse.y - 24, "NO KNIVES", "rgba(255,93,93,.85)", 14); return; }
+  const frac = chargeFrac(), power = frac >= 1;
+  const speed = lerp(KNIFE.speed, KNIFE.powerSpeed, frac);
+  let dx = (mouse.x - CX) / F, dy = -(mouse.y - HOR) / F, dz = 1;
+  const len = Math.hypot(dx, dy, dz); dx /= len; dy /= len; dz /= len;
+  g.knives.push(new Knife({
+    x: dx * 0.25, y: EYE + dy * 0.25, z: dz * 0.25,
+    vx: dx * speed, vy: dy * speed, vz: dz * speed,
+    owner: "player", mine: g.mode !== "range", power,
+    from: { x: HAND_REST.x - 10, y: HAND_REST.y - 60 },
+  }));
+  if (g.mode !== "range") g.belt--;
+  g.stats.thrown++;
+  g.throwCD = KNIFE.cooldown; g.throwAnim = 0.16;
+  sfx.whoosh(power);
+}
+
+function tryDeflect() {
+  const g = game;
+  if (g.deflectCD > 0) return;
+  g.deflectCD = DEFLECT.cooldown; g.deflectT = DEFLECT.time;
+  g.deflectAt = { x: mouse.x, y: mouse.y };
+  sfx.slash();
+  let hit = false;
+  for (const k of g.knives) {
+    if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+    const p = proj(k.x, k.y, k.z);
+    if (dist(p.x, p.y, mouse.x, mouse.y) < DEFLECT.deflectPx) { deflect(k, p); hit = true; }
+  }
+  if (!hit) sfx.empty();
+}
+
+function deflect(k, p) {
+  const g = game;
+  k.owner = "player"; k.deflected = true; k.mine = false; k.from = null;
+  const src = k.src && k.src.alive ? k.src : null;
+  const tx = src ? src.x : k.x * 0.5, ty = src ? 1.64 * src.sc : 1.5, tz = src ? src.z : 25;
+  const speed = 30;
+  const T = Math.hypot(tx - k.x, ty - k.y, tz - k.z) / speed;
+  k.vx = (tx - k.x) / T; k.vy = (ty - k.y) / T + 0.5 * KNIFE.gravity * T; k.vz = (tz - k.z) / T;
+  g.stats.deflects++;
+  g.bumpCombo();
+  sfx.deflect();
+  burst(p.x, p.y, 14, "#6fd3ff", { max: 7, grav: 0.1 });
+  g.addScore(30, p.x, p.y - 30, "DEFLECT", "#6fd3ff", 20);
+}
+
+function playerInput() {
+  const g = game;
+  if (mouse.pressed) { g.charging = true; g.chargeT = 0; }
+  if (g.charging && mouse.down) g.chargeT += DT;
+  if (mouse.released && g.charging) { g.charging = false; tryThrow(); }
+  if (mouse.rpressed || pressed.Space || pressed.KeyF) tryDeflect();
+}
+
+// ============ UPDATE ============
+function updateWorld() {
+  const g = game;
+  g.elapsed += DT;
+  g.iframes = Math.max(0, g.iframes - DT);
+  g.hurtFlash = Math.max(0, g.hurtFlash - DT);
+  g.shake *= 0.86;
+  g.throwCD -= DT; g.deflectCD -= DT;
+  g.throwAnim = Math.max(0, g.throwAnim - DT);
+  g.deflectT = Math.max(0, g.deflectT - DT);
+  if (g.scratch && (g.scratch.t -= DT) <= 0) g.scratch = null;
+  if (g.banner && (g.banner.t += DT) > g.banner.dur) g.banner = null;
+
+  for (const e of g.enemies) e.update();
+  separateEnemies();
+  for (const e of g.enemies) if (e.remove) releaseKnives(e);
+  g.enemies = g.enemies.filter(e => !e.remove);
+
+  for (const t of g.targets) t.update();
+  for (const t of g.targets) if (t.remove) releaseKnives(t);
+  g.targets = g.targets.filter(t => !t.remove);
+
+  for (const k of g.knives) k.update();
+  g.knives = g.knives.filter(k => k.state !== "gone");
+
+  if (g.mode === "fight") updateWaves();
+  else if (g.mode === "duel") updateThrowdown();
+  else updateRange();
+}
+function updateEffects() {
+  const g = game;
+  for (const p of g.particles) { p.age += DT; p.x += p.vx; p.y += p.vy; p.vy += p.grav; p.vx *= 0.97; }
+  g.particles = g.particles.filter(p => p.age < p.life);
+  for (const p of g.popups) p.t += DT;
+  g.popups = g.popups.filter(p => p.t < 1.1);
+}
+function releaseKnives(host) {
+  for (const k of game.knives) if (k.host === host && k.state === "stuck") k.retire();
+}
+function separateEnemies() {
+  const list = game.enemies.filter(e => e.alive && !e.engaged && !e.t.ranged);
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (Math.abs(a.z - b.z) < 1 && Math.abs(a.x - b.x) < 0.8) {
+      const s = a.x < b.x ? -1 : 1;
+      a.laneX = clamp(a.laneX + s * 0.03, -3, 3); b.laneX = clamp(b.laneX - s * 0.03, -3, 3);
+    }
+  }
+}
+
+// ============ MAIN LOOP ============
+const MENU_CARDS = [
+  { mode: "fight", key: "1", title: "KNIFE WAVE", lines: ["Waves rush you head-on.", "Throw them down before they arrive."] },
+  { mode: "range", key: "2", title: "TARGET RANGE", lines: ["60 seconds, unlimited knives.", "Boards, balloons, bottles, gold."] },
+  { mode: "duel", key: "3", title: "THROWDOWN", lines: ["One-on-one vs an ace thrower.", "Deflect. Return. Finish."] },
+];
+MENU_CARDS.forEach((c, i) => Object.assign(c, { x: 50 + i * 294, y: 300, w: 272, h: 138 }));
+const menuDummy = new Enemy("ace", -1.7, 6.5);
+menuDummy.alpha = 1; menuDummy.moving = false; menuDummy.standZ = 6.5;
+
+function tick() {
+  const g = game;
+  g.t += DT;
+  if (pressed.KeyM) sfx.toggle();
+  if (g.state !== "paused") updateEffects();
+
+  if (g.state === "menu") {
+    menuDummy.walk += DT * 1.5; menuDummy.age += DT;
+    const keyCard = MENU_CARDS.find(c => pressed["Digit" + c.key] || pressed["Numpad" + c.key]);
+    if (keyCard) g.start(keyCard.mode);
+    else if (mouse.pressed) {
+      const card = MENU_CARDS.find(c => inRect(mouse.x, mouse.y, c));
+      if (card) { g.start(card.mode); mouse.down = false; }
+    }
+    clearInput(); return;
+  }
+  if (g.state === "over") {
+    g.overT += DT;
+    if (pressed.Escape) g.state = "menu";
+    else if (g.overT > 0.7 && (pressed.Enter || pressed.Space || pressed.KeyR || mouse.pressed)) { g.start(g.mode); mouse.down = false; }
+    clearInput(); return;
+  }
+  if (g.state === "paused") {
+    if (pressed.KeyP || mouse.pressed) g.state = "play";
+    else if (pressed.Escape) g.state = "menu";
+    else if (pressed.KeyR) g.start(g.mode);
+    mouse.down = false; g.charging = false;
+    clearInput(); return;
+  }
+  if (pressed.KeyP || pressed.Escape) { g.state = "paused"; clearInput(); return; }
+  if (pressed.KeyR) { g.start(g.mode); clearInput(); return; }
+  playerInput();
+  updateWorld();
+  clearInput();
+}
+
+let last = 0, acc = 0;
+function loop(now) {
+  if (!last) last = now;
+  acc += Math.min(0.1, (now - last) / 1000);
+  last = now;
+  while (acc >= DT) { tick(); acc -= DT; }
+  render();
+  requestAnimationFrame(loop);
+}
+function fit() {
+  const r = canvas.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.width * dpr * 9 / 16);
+}
+
+// ============ DRAW HELPERS ============
+function text(str, x, y, { size = 16, weight = 600, color = "#dfe6f2", align = "left", spacing = 0, shadow = false } = {}) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.textAlign = align; ctx.textBaseline = "alphabetic";
+  if (spacing && "letterSpacing" in ctx) ctx.letterSpacing = spacing + "px";
+  if (shadow) { ctx.shadowColor = "rgba(0,0,0,.65)"; ctx.shadowBlur = 14; ctx.shadowOffsetY = 3; }
+  ctx.fillStyle = color;
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+function rrect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+}
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function drawHeart(c, x, y, r, col) {
+  c.fillStyle = col;
+  c.beginPath();
+  c.moveTo(x, y + r * 0.9);
+  c.bezierCurveTo(x - r * 1.5, y - r * 0.1, x - r * 0.7, y - r * 1.2, x, y - r * 0.4);
+  c.bezierCurveTo(x + r * 0.7, y - r * 1.2, x + r * 1.5, y - r * 0.1, x, y + r * 0.9);
+  c.fill();
+}
+// Side-on knife sprite, 28px long at scale 1, centred on (x, y), tip along angle a.
+function drawKnife(c, x, y, a, o = {}) {
+  c.save();
+  c.translate(x, y); c.rotate(a);
+  if (o.scale) c.scale(o.scale, o.scale);
+  if (o.stretch) c.scale(o.stretch, 1);
+  if (o.glow) { c.shadowColor = o.glow; c.shadowBlur = 14; }
+  c.fillStyle = "#dfe6f2";
+  c.beginPath();
+  c.moveTo(-4, -2.8); c.lineTo(8, -2.6); c.lineTo(14, 0); c.lineTo(8, 2.2); c.lineTo(-4, 2.4);
+  c.closePath(); c.fill();
+  c.shadowBlur = 0;
+  c.fillStyle = "rgba(255,255,255,.75)"; c.fillRect(-3, -2.4, 10, 1);
+  c.fillStyle = "#c9a227"; c.fillRect(-6, -4, 2.5, 8);
+  c.fillStyle = o.handle || "#7a5230"; c.fillRect(-14, -2.2, 8.5, 4.4);
+  c.restore();
+}
+// A knife buried point-first, seen from behind: just guard, handle and pommel poking out.
+function drawStuckKnife(x, y, s, tilt) {
+  const L = 0.16 * s;
+  const ex = x + tilt.x * L, ey = y - tilt.y * L;
+  const gx = lerp(x, ex, 0.18), gy = lerp(y, ey, 0.18);
+  const nx = -(ey - y), ny = ex - x, nl = Math.hypot(nx, ny) || 1;
+  const gw = 0.035 * s;
+  ctx.lineCap = "round";
+  ctx.fillStyle = "rgba(0,0,0,.35)";
+  ctx.beginPath(); ctx.arc(x, y, Math.max(1, 0.012 * s), 0, TAU); ctx.fill();
+  ctx.strokeStyle = "#7a5230"; ctx.lineWidth = Math.max(1.5, 0.032 * s);
+  line(gx, gy, ex, ey);
+  ctx.strokeStyle = "#c9a227"; ctx.lineWidth = Math.max(1, 0.016 * s);
+  line(gx - nx / nl * gw, gy - ny / nl * gw, gx + nx / nl * gw, gy + ny / nl * gw);
+  ctx.fillStyle = "#c9a227";
+  ctx.beginPath(); ctx.arc(ex, ey, Math.max(1, 0.02 * s), 0, TAU); ctx.fill();
+}
+
+// ============ SCENE ============
+const SKYLINE = (() => {
+  const out = []; let x = -20;
+  while (x < W + 20) { const w = rand(28, 70); out.push({ x, w, h: rand(18, 70), win: Math.random() < 0.6 }); x += w + rand(-6, 4); }
+  return out;
+})();
+const STARS = Array.from({ length: 60 }, () => ({ x: rand(0, W), y: rand(0, HOR - 70), r: rand(0.4, 1.3), p: rand(0, TAU) }));
+const POSTS = [];
+for (const z of [7, 13, 19, 25, 31]) for (const x of [-4.4, 4.4]) POSTS.push({ x, z });
+
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, HOR);
+  g.addColorStop(0, "#0b0f1c"); g.addColorStop(0.55, "#221c36"); g.addColorStop(1, "#5a3446");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, HOR);
+  for (const s of STARS) {
+    ctx.fillStyle = `rgba(230,235,255,${0.35 + 0.3 * Math.sin(game.t * 1.5 + s.p)})`;
+    ctx.fillRect(s.x, s.y, s.r, s.r);
+  }
+  ctx.fillStyle = "#f3e7c9"; ctx.shadowColor = "#f3e7c9"; ctx.shadowBlur = 30;
+  ctx.beginPath(); ctx.arc(760, 70, 22, 0, TAU); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#171424";
+  for (const b of SKYLINE) {
+    ctx.fillRect(b.x, HOR - 18 - b.h, b.w, b.h + 18);
+  }
+  ctx.fillStyle = "rgba(255,206,120,.35)";
+  for (const b of SKYLINE) if (b.win) for (let wy = HOR - b.h; wy < HOR - 26; wy += 9) if ((wy + b.x) % 3 < 1.2) ctx.fillRect(b.x + 6, wy, 3, 3);
+}
+function drawGround() {
+  const g = ctx.createLinearGradient(0, HOR, 0, H);
+  g.addColorStop(0, "#2a2024"); g.addColorStop(0.35, "#3a2c26"); g.addColorStop(1, "#4d3b2e");
+  ctx.fillStyle = g; ctx.fillRect(0, HOR, W, H - HOR);
+  ctx.strokeStyle = "rgba(255,220,180,.06)"; ctx.lineWidth = 1;
+  for (let x = -12; x <= 12; x += 1.5) {
+    const a = proj(x, 0, ARENA_Z), b = proj(x, 0, 1.2);
+    line(a.x, a.y, b.x, b.y);
+  }
+  for (const z of [2.5, 3.5, 5, 7, 10, 14, 19, 26]) { const p = proj(0, 0, z); line(0, p.y, W, p.y); }
+}
+function drawFence() {
+  const top = proj(0, 2.6, ARENA_Z), bot = proj(0, 0, ARENA_Z);
+  ctx.fillStyle = "#3b2a22"; ctx.fillRect(0, top.y, W, bot.y - top.y);
+  ctx.strokeStyle = "rgba(0,0,0,.35)"; ctx.lineWidth = 1;
+  for (let x = -30; x <= 30; x += 0.5) { const p = proj(x, 0, ARENA_Z); line(p.x, top.y, p.x, bot.y); }
+  ctx.fillStyle = "rgba(255,200,140,.08)"; ctx.fillRect(0, top.y, W, 2);
+  // gate
+  const gl = proj(-1.2, 0, ARENA_Z), gr = proj(1.2, 0, ARENA_Z), gt = proj(0, 2.3, ARENA_Z);
+  ctx.fillStyle = "#140f12"; ctx.fillRect(gl.x, gt.y, gr.x - gl.x, bot.y - gt.y);
+}
+function drawPost(p) {
+  const b = proj(p.x, 0, p.z), t = proj(p.x, 2.7, p.z), s = b.s;
+  ctx.fillStyle = "#2c1f19"; ctx.fillRect(b.x - 0.07 * s, t.y, 0.14 * s, b.y - t.y);
+  const lx = b.x - Math.sign(p.x) * 0.3 * s, ly = t.y + 0.2 * s;
+  ctx.strokeStyle = "#2c1f19"; ctx.lineWidth = Math.max(1, 0.04 * s);
+  line(b.x, t.y + 0.05 * s, lx, t.y + 0.05 * s);
+  const flick = 0.85 + 0.15 * Math.sin(game.t * 9 + p.z);
+  const gr = ctx.createRadialGradient(lx, ly, 0, lx, ly, 1.4 * s);
+  gr.addColorStop(0, `rgba(255,190,100,${0.28 * flick})`); gr.addColorStop(1, "rgba(255,190,100,0)");
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(lx, ly, 1.4 * s, 0, TAU); ctx.fill();
+  ctx.fillStyle = "#ffcf7a"; ctx.fillRect(lx - 0.06 * s, ly - 0.1 * s, 0.12 * s, 0.18 * s);
+}
+
+function drawEnemy(e) {
+  const v = e.view(), { p, S, squash, ox, bob } = v;
+  const alpha = e.alpha * (e.state === "dying" ? 1 - clamp((e.dieT - 0.5) / 0.4, 0, 1) : 1);
+  if (alpha <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(0,0,0,.35)";
+  ctx.beginPath(); ctx.ellipse(p.x + ox, p.y, 0.36 * S, 0.07 * S, 0, 0, TAU); ctx.fill();
+  ctx.translate(p.x + ox, p.y);
+  ctx.scale(S, -S * squash);
+  const fl = e.flash > 0;
+  const col = c => (fl ? "#ffffff" : c);
+  const base = e.t.color;
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  // legs
+  const lift = e.moving ? 0.13 : 0;
+  const lf = Math.max(0, Math.sin(e.walk)) * lift, rf = Math.max(0, -Math.sin(e.walk)) * lift;
+  ctx.strokeStyle = col("#262a35"); ctx.lineWidth = 0.13;
+  line(-0.1, 0.9 + bob, -0.15, 0.06 + lf); line(0.1, 0.9 + bob, 0.15, 0.06 + rf);
+  ctx.fillStyle = col("#121419");
+  ctx.fillRect(-0.24, lf, 0.16, 0.08); ctx.fillRect(0.08, rf, 0.16, 0.08);
+  ctx.translate(0, bob);
+  const sh = 1.42;
+  const hand = e.handLocal();
+  // off arm
+  const offHand = e.shieldHp > 0 ? { x: -0.12, y: 1.1 } : { x: -0.36, y: 1.0 + Math.sin(e.walk + 1) * 0.03 };
+  ctx.strokeStyle = col(shade(base, -0.25)); ctx.lineWidth = 0.1;
+  line(-0.24, sh, offHand.x, offHand.y);
+  // torso
+  ctx.fillStyle = col(base);
+  ctx.beginPath();
+  ctx.moveTo(-0.25, 1.48); ctx.lineTo(0.25, 1.48); ctx.lineTo(0.2, 0.86); ctx.lineTo(-0.2, 0.86); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = col(shade(base, -0.18)); ctx.fillRect(-0.2, 0.86, 0.4, 0.22);
+  ctx.fillStyle = col("#1a1a20"); ctx.fillRect(-0.21, 0.98, 0.42, 0.06);
+  // head
+  ctx.fillStyle = col("#c99a74");
+  ctx.beginPath(); ctx.arc(0, 1.64, 0.14, 0, TAU); ctx.fill();
+  ctx.fillStyle = col("#231a16");
+  ctx.beginPath(); ctx.arc(0, 1.67, 0.142, 0.15, Math.PI - 0.15); ctx.fill();
+  ctx.fillStyle = col(shade(base, -0.35)); ctx.fillRect(-0.145, 1.6, 0.29, 0.07);
+  const angry = e.phase === "windup";
+  ctx.fillStyle = fl ? "#ddd" : angry ? "#ff4d4d" : "#f2efe6";
+  ctx.beginPath(); ctx.arc(-0.05, 1.635, 0.018, 0, TAU); ctx.arc(0.05, 1.635, 0.018, 0, TAU); ctx.fill();
+  // shield
+  if (e.shieldHp > 0) {
+    ctx.fillStyle = col("#6d7c92");
+    ctx.beginPath(); ctx.arc(SHIELD.x, SHIELD.y, SHIELD.r, 0, TAU); ctx.fill();
+    ctx.strokeStyle = col("#b8c4d6"); ctx.lineWidth = 0.035; ctx.stroke();
+    ctx.fillStyle = col("#b8c4d6"); ctx.beginPath(); ctx.arc(SHIELD.x, SHIELD.y, 0.06, 0, TAU); ctx.fill();
+    if (e.shieldHp < 3) {
+      ctx.strokeStyle = "rgba(20,20,30,.7)"; ctx.lineWidth = 0.015;
+      line(SHIELD.x - 0.05, SHIELD.y + 0.05, SHIELD.x - 0.2, SHIELD.y + 0.2);
+      if (e.shieldHp < 2) line(SHIELD.x + 0.04, SHIELD.y - 0.03, SHIELD.x + 0.22, SHIELD.y - 0.15);
+    }
+  }
+  // knife arm + knife
+  ctx.strokeStyle = col(shade(base, -0.25)); ctx.lineWidth = 0.1;
+  const elbow = { x: lerp(0.24, hand.x, 0.5) + 0.08, y: lerp(sh, hand.y, 0.5) - 0.04 };
+  ctx.beginPath(); ctx.moveTo(0.24, sh); ctx.quadraticCurveTo(elbow.x, elbow.y, hand.x, hand.y); ctx.stroke();
+  let ka = 1.2;
+  if (e.phase === "windup") ka = e.dir === "L" ? 2.3 : e.dir === "R" ? 0.85 : 1.75;
+  else if (e.phase === "strike") ka = 1.9;
+  const big = e.phase === "strike" ? 1.6 : 1;
+  ctx.save();
+  ctx.translate(hand.x, hand.y); ctx.rotate(ka); ctx.scale(big, big);
+  if (e.phase === "windup" && !fl) { ctx.shadowColor = e.t.ranged ? "#ffb04d" : "#ff3b4a"; ctx.shadowBlur = 18; }
+  ctx.fillStyle = "#e6ebf3";
+  ctx.beginPath(); ctx.moveTo(0.02, -0.025); ctx.lineTo(0.22, -0.02); ctx.lineTo(0.3, 0); ctx.lineTo(0.22, 0.018); ctx.lineTo(0.02, 0.02); ctx.closePath(); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#c9a227"; ctx.fillRect(0, -0.04, 0.02, 0.08);
+  ctx.fillStyle = "#3a2a20"; ctx.fillRect(-0.1, -0.018, 0.1, 0.036);
+  ctx.restore();
+  ctx.fillStyle = col("#c99a74");
+  ctx.beginPath(); ctx.arc(hand.x, hand.y, 0.045, 0, TAU); ctx.fill();
+  ctx.fillStyle = col("#c99a74");
+  ctx.beginPath(); ctx.arc(offHand.x, offHand.y, 0.045, 0, TAU); ctx.fill();
+  ctx.restore();
+
+  // knives stuck in them
+  for (const k of game.knives) {
+    if (k.host !== e || k.state !== "stuck") continue;
+    const q = e.toScreen(k.lx, k.ly, v);
+    ctx.save(); ctx.globalAlpha = alpha;
+    drawStuckKnife(q.x, q.y, p.s, k.tilt);
+    ctx.restore();
+  }
+  if (!e.alive || e === menuDummy) return;
+  // health pips once they've been hurt (or always for big ones)
+  if (e.maxHp > 1 && (e.hp < e.maxHp || e.engaged)) {
+    const top = e.toScreen(0, 1.86, v);
+    const pw = Math.max(4, Math.min(12, 0.08 * S)), gap = 2, tw = e.maxHp * pw + (e.maxHp - 1) * gap;
+    for (let i = 0; i < e.maxHp; i++) {
+      ctx.fillStyle = i < e.hp ? "#ff5d6c" : "rgba(255,255,255,.18)";
+      ctx.fillRect(top.x - tw / 2 + i * (pw + gap), top.y, pw, 4);
+    }
+  }
+  if (e.phase === "windup") {
+    const top = e.toScreen(0, 2.15, v);
+    text("!", top.x, top.y, { size: Math.max(14, 0.25 * S), weight: 900, align: "center", color: e.t.ranged ? "#ffb04d" : "#ff5d5d", shadow: true });
+  }
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = c => clamp(Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt), 0, 255);
+  return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
+}
+
+function drawTarget(t) {
+  const c = proj(t.x, t.y, t.z), s = c.s;
+  if (t.kind === "board") {
+    const g = proj(t.x, 0, t.z);
+    const cy = lerp(g.y, c.y, t.rise), sy = t.rise;
+    ctx.fillStyle = "#3a2a1c"; ctx.fillRect(c.x - 0.04 * s, cy, 0.08 * s, g.y - cy);
+    ctx.fillStyle = "rgba(0,0,0,.3)"; ctx.beginPath(); ctx.ellipse(c.x, g.y, 0.3 * s, 0.05 * s, 0, 0, TAU); ctx.fill();
+    for (const [rr, col] of [[1.08, "#5a3e24"], [1, "#efe8da"], [0.72, "#d8433a"], [0.45, "#efe8da"], [0.18, "#ffcf3f"]]) {
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.ellipse(c.x, cy, rr * t.r * s, rr * t.r * s * sy, 0, 0, TAU); ctx.fill();
+    }
+    for (const k of game.knives) {
+      if (k.host !== t || k.state !== "stuck") continue;
+      drawStuckKnife(c.x + k.lx * s, cy - k.ly * s * sy, s, k.tilt);
+    }
+  } else if (t.kind === "balloon") {
+    ctx.strokeStyle = "rgba(230,230,230,.4)"; ctx.lineWidth = 1;
+    line(c.x, c.y + t.r * s, c.x + Math.sin(t.age * 2) * 0.05 * s, c.y + t.r * s + 0.5 * s);
+    ctx.fillStyle = t.color;
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, t.r * s * 0.9, t.r * s, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.35)";
+    ctx.beginPath(); ctx.ellipse(c.x - t.r * s * 0.3, c.y - t.r * s * 0.35, t.r * s * 0.18, t.r * s * 0.28, -0.4, 0, TAU); ctx.fill();
+  } else if (t.kind === "bottle") {
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(t.spin); ctx.scale(s, s);
+    ctx.fillStyle = "#3f8f4c"; rrect(ctx, -0.06, -0.08, 0.12, 0.2, 0.03); ctx.fill();
+    ctx.fillRect(-0.025, -0.17, 0.05, 0.1);
+    ctx.fillStyle = "rgba(255,255,255,.35)"; ctx.fillRect(-0.04, -0.05, 0.02, 0.13);
+    ctx.restore();
+  } else {
+    const w = Math.abs(Math.cos(t.spin));
+    ctx.fillStyle = "#ffd84d"; ctx.shadowColor = "#ffd84d"; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, Math.max(1, t.r * s * w), t.r * s, 0, 0, TAU); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#c9a227";
+    ctx.beginPath(); ctx.ellipse(c.x, c.y, Math.max(0.5, t.r * s * w * 0.6), t.r * s * 0.6, 0, 0, TAU); ctx.fill();
+  }
+}
+
+function drawWorld(menu = false) {
+  drawSky(); drawGround(); drawFence();
+  const list = [];
+  for (const p of POSTS) list.push({ z: p.z, f: () => drawPost(p) });
+  if (menu) {
+    list.push({ z: menuDummy.z, f: () => drawEnemy(menuDummy) });
+    list.push({ z: MENU_BOARD.z, f: () => drawTarget(MENU_BOARD) });
+  } else {
+    for (const e of game.enemies) list.push({ z: e.z, f: () => drawEnemy(e) });
+    for (const t of game.targets) list.push({ z: t.z, f: () => drawTarget(t) });
+    for (const k of game.knives) {
+      if (k.state === "stuck" && k.host.kind !== "ground" && k.host.kind !== "wall") continue;
+      list.push({ z: k.z, f: () => k.draw() });
+    }
+  }
+  list.sort((a, b) => b.z - a.z);
+  for (const d of list) d.f();
+  // vignette
+  const v = ctx.createRadialGradient(CX, H * 0.55, H * 0.35, CX, H * 0.55, W * 0.7);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,.55)");
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+const MENU_BOARD = new Target("board", { x: 1.9, y: 1.55, z: 8 });
+MENU_BOARD.rise = 1;
+
+// ----- your hand -----
+function deflectPoint(u) {
+  const a = game.deflectAt;
+  const P0 = { x: a.x + 260, y: a.y - 170 }, P2 = { x: a.x - 240, y: a.y + 190 };
+  const C = { x: 2 * a.x - (P0.x + P2.x) / 2, y: 2 * a.y - (P0.y + P2.y) / 2 };
+  const m = 1 - u;
+  return {
+    x: m * m * P0.x + 2 * m * u * C.x + u * u * P2.x,
+    y: m * m * P0.y + 2 * m * u * C.y + u * u * P2.y,
+  };
+}
+function drawViewmodel(idle = false) {
+  const g = game;
+  const breathe = Math.sin(g.t * 2) * 3;
+  let hx = HAND_REST.x, hy = HAND_REST.y + breathe, ang = -1.3;
+  let showKnife = idle || g.hasKnife;
+  if (!idle) {
+    const cf = chargeFrac();
+    if (g.charging && mouse.down) {
+      hx += 40 * cf + rand(-1, 1) * cf * 1.5; hy -= 46 * cf;
+      ang = lerp(-1.3, -0.5, cf);
+    }
+    if (g.throwAnim > 0) {
+      const u = 1 - g.throwAnim / 0.16, k = Math.sin(u * Math.PI);
+      hx = lerp(hx, lerp(HAND_REST.x, mouse.x, 0.3), k);
+      hy = lerp(hy, lerp(HAND_REST.y, mouse.y, 0.3), k);
+      ang = -1.3 - k * 0.5;
+      showKnife = showKnife && u > 0.9;
+    }
+    if (g.deflectT > 0) {
+      const u0 = 1 - g.deflectT / DEFLECT.time, u = 1 - (1 - u0) * (1 - u0);
+      const P = deflectPoint(u), Q = deflectPoint(Math.min(1, u + 0.02));
+      hx = P.x + 20; hy = P.y + 30;
+      ang = Math.atan2(Q.y - P.y, Q.x - P.x) - 0.6;
+      ctx.save();
+      ctx.lineCap = "round";
+      const from = Math.max(0, u - 0.5);
+      for (const [w, c] of [[16, "rgba(160,200,255,.22)"], [7, "rgba(235,245,255,.6)"], [2.5, "#ffffff"]]) {
+        ctx.strokeStyle = c; ctx.lineWidth = w;
+        ctx.beginPath();
+        for (let i = 0; i <= 16; i++) { const q = deflectPoint(lerp(from, u, i / 16)); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+  // arm
+  ctx.save();
+  ctx.lineCap = "round";
+  const ax = W + 70, ay = H + 110;
+  ctx.strokeStyle = "#241a15"; ctx.lineWidth = 62; line(ax, ay, hx + 14, hy + 26);
+  ctx.strokeStyle = "#3b2c22"; ctx.lineWidth = 52; line(ax, ay, hx + 14, hy + 26);
+  ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 10; line(ax - 14, ay - 18, hx + 4, hy + 14);
+  ctx.strokeStyle = "#1a120e"; ctx.lineWidth = 46; line(hx + 22, hy + 38, hx + 12, hy + 22);
+  if (showKnife) drawKnife(ctx, hx + Math.cos(ang) * 30, hy + Math.sin(ang) * 30, ang, { scale: 3.4 });
+  ctx.fillStyle = "#c98f66";
+  ctx.beginPath(); ctx.ellipse(hx, hy, 24, 20, ang + 0.4, 0, TAU); ctx.fill();
+  ctx.fillStyle = "#b07a55";
+  ctx.beginPath(); ctx.ellipse(hx - 6, hy + 4, 14, 10, ang + 0.4, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+// ----- HUD -----
+function drawHUD() {
+  const g = game;
+  // hearts
+  for (let i = 0; i < MAX_HP; i++) drawHeart(ctx, 30 + i * 30, 30, 11, i < g.hp ? "#ff5d6c" : "rgba(255,255,255,.15)");
+  // knife belt
+  if (g.mode === "range") text("∞ KNIVES", 22, H - 22, { size: 13, weight: 800, spacing: 2, color: "rgba(223,230,242,.7)" });
+  else {
+    for (let i = 0; i < g.beltMax; i++) {
+      ctx.save(); ctx.globalAlpha = i < g.belt ? 1 : 0.18;
+      drawKnife(ctx, 30 + i * 18, H - 34, -Math.PI / 2, { scale: 0.95 });
+      ctx.restore();
+    }
+    if (g.belt === 0) text("OUT — wait for knives to come back", 22, H - 62, { size: 12, weight: 700, color: "#ff8a7a" });
+  }
+  // score
+  text(g.score.toLocaleString(), W - 22, 40, { size: 28, weight: 800, align: "right", shadow: true });
+  text(`BEST ${Math.max(g.best[g.mode], g.score).toLocaleString()}`, W - 22, 60, { size: 11, weight: 700, align: "right", color: "rgba(223,230,242,.5)", spacing: 2 });
+  if (g.mult > 1) text(`x${g.mult} COMBO`, W - 22, 84, { size: 15, weight: 800, align: "right", color: "#ffd84d", spacing: 1 });
+  // centre top
+  if (g.mode === "range") {
+    const urgent = g.time < 10;
+    text(Math.ceil(g.time).toString(), CX, 46, { size: 34, weight: 800, align: "center", color: urgent ? "#ff5d5d" : "#dfe6f2", shadow: true });
+  } else if (g.mode === "fight") {
+    const left = g.queue.length + g.enemies.filter(e => e.alive).length;
+    text(`WAVE ${g.wave}`, CX, 34, { size: 16, weight: 800, align: "center", spacing: 3 });
+    if (g.wavePhase === "fight") text(`${left} LEFT`, CX, 52, { size: 11, weight: 700, align: "center", color: "rgba(223,230,242,.55)", spacing: 2 });
+  } else {
+    const [name] = ACES[(g.duelN - 1) % ACES.length];
+    text(`THROWDOWN ${g.duelN} · ${name.toUpperCase()}`, CX, 34, { size: 16, weight: 800, align: "center", spacing: 3 });
+  }
+  // highlight incoming knives you can deflect
+  for (const k of g.knives) {
+    if (g.state !== "play" || k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+    const p = proj(k.x, k.y, k.z);
+    const near = dist(mouse.x, mouse.y, p.x, p.y) < DEFLECT.deflectPx;
+    ctx.strokeStyle = near ? "#6fd3ff" : "rgba(255,180,80,.55)";
+    ctx.lineWidth = near ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, near ? 28 : 22, 0, TAU); ctx.stroke();
+  }
+  if (g.hp === 1 && g.state === "play") {
+    const a = 0.12 + 0.1 * Math.sin(g.t * 6);
+    ctx.strokeStyle = `rgba(255,40,60,${a})`; ctx.lineWidth = 20; ctx.strokeRect(0, 0, W, H);
+  }
+}
+function drawEffects() {
+  const g = game;
+  for (const p of g.particles) {
+    ctx.globalAlpha = 1 - p.age / p.life;
+    ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+  for (const p of g.popups) {
+    const a = 1 - Math.max(0, (p.t - 0.6) / 0.5);
+    ctx.save(); ctx.globalAlpha = a;
+    text(p.str, p.x, p.y - p.t * 40, { size: p.size, weight: 800, align: "center", color: p.color, shadow: true });
+    ctx.restore();
+  }
+}
+function drawScratch() {
+  const s = game.scratch; if (!s) return;
+  const a = Math.min(1, s.t / 0.4);
+  ctx.save();
+  ctx.strokeStyle = `rgba(200,20,40,${0.75 * a})`; ctx.lineCap = "round";
+  for (let i = 0; i < 3; i++) {
+    ctx.lineWidth = 7 - i * 1.5;
+    const o = (i - 1) * 46;
+    if (s.dir === "L") line(120, 120 + o, 820, 400 + o);
+    else if (s.dir === "R") line(840, 120 + o, 140, 400 + o);
+    else if (s.dir === "H") line(300 + o * 1.5, 40, 380 + o * 1.5, 500);
+    else line(CX - 60 + o, HOR - 80, CX + 40 + o, HOR + 120);
+  }
+  ctx.restore();
+}
+function drawBanner() {
+  const b = game.banner; if (!b) return;
+  const a = Math.min(1, b.t / 0.25, (b.dur - b.t) / 0.4);
+  ctx.save(); ctx.globalAlpha = clamp(a, 0, 1);
+  ctx.fillStyle = "rgba(8,10,16,.55)"; ctx.fillRect(0, 168, W, 92);
+  text(b.title, CX, 214, { size: 36, weight: 800, align: "center", spacing: 6, shadow: true });
+  text(b.sub, CX, 242, { size: 15, align: "center", color: "#b9c4d8" });
+  ctx.restore();
+}
+function drawCrosshair() {
+  const g = game, x = mouse.x, y = mouse.y;
+  const empty = g.state === "play" && !g.hasKnife;
+  let col = empty ? "#ff5d5d" : "#ffffff";
+  if (g.state === "play") {
+    for (const k of g.knives) {
+      if (k.state !== "fly" || k.owner !== "enemy" || k.z > DEFLECT.deflectZ) continue;
+      const p = proj(k.x, k.y, k.z);
+      if (dist(x, y, p.x, p.y) < DEFLECT.deflectPx) { col = "#6fd3ff"; break; }
+    }
+  }
+  ctx.save();
+  ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.globalAlpha = 0.9;
+  ctx.beginPath(); ctx.arc(x, y, 9, 0, TAU); ctx.stroke();
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) line(x + dx * 13, y + dy * 13, x + dx * 19, y + dy * 19);
+  ctx.fillStyle = col; ctx.fillRect(x - 1, y - 1, 2, 2);
+  if (g.state === "play" && g.charging && mouse.down) {
+    const cf = chargeFrac();
+    ctx.strokeStyle = cf >= 1 ? "#ff9d5c" : "rgba(255,255,255,.7)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x, y, 25, -Math.PI / 2, -Math.PI / 2 + cf * TAU); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawMenu() {
+  drawWorld(true);
+  ctx.fillStyle = "rgba(8,10,16,.45)"; ctx.fillRect(0, 0, W, H);
+  text("KNIFE THROWER", CX, 120, { size: 60, weight: 800, align: "center", spacing: 10, shadow: true });
+  text("first person · aim · charge · throw · deflect", CX, 152, { size: 15, align: "center", color: "rgba(223,230,242,.7)", spacing: 3 });
+  const tips = [
+    ["Click", "throw at the crosshair — hold for a power throw"],
+    ["Right-click / Space", "deflect incoming knives back at the thrower"],
+    ["Headshots", "drop most enemies in one clean hit"],
+  ];
+  tips.forEach(([k, d], i) => {
+    text(k, CX - 12, 200 + i * 24, { size: 13, weight: 800, align: "right", color: "#ffd84d", spacing: 1 });
+    text(d, CX + 2, 200 + i * 24, { size: 13, color: "#b9c4d8" });
+  });
+  for (const c of MENU_CARDS) {
+    const hover = inRect(mouse.x, mouse.y, c);
+    const y = c.y - (hover ? 3 : 0);
+    rrect(ctx, c.x, y, c.w, c.h, 12);
+    ctx.fillStyle = hover ? "rgba(40,50,72,.95)" : "rgba(20,25,38,.88)"; ctx.fill();
+    ctx.strokeStyle = hover ? "#ff5d5d" : "rgba(255,255,255,.12)"; ctx.lineWidth = hover ? 2 : 1; ctx.stroke();
+    text(c.title, c.x + 20, y + 38, { size: 20, weight: 800, spacing: 3 });
+    text(c.key, c.x + c.w - 20, y + 36, { size: 14, weight: 800, align: "right", color: "rgba(223,230,242,.35)" });
+    c.lines.forEach((l, i) => text(l, c.x + 20, y + 66 + i * 20, { size: 13, color: "#b9c4d8" }));
+    text(`BEST ${game.best[c.mode].toLocaleString()}`, c.x + 20, y + c.h - 16, { size: 11, weight: 700, color: "rgba(223,230,242,.45)", spacing: 2 });
+  }
+  text("Click a mode or press 1 / 2 / 3  ·  M to mute", CX, 470, { size: 12, align: "center", color: "rgba(223,230,242,.45)", spacing: 1 });
+}
+function drawPause() {
+  ctx.fillStyle = "rgba(8,10,16,.6)"; ctx.fillRect(0, 0, W, H);
+  text("PAUSED", CX, H / 2 - 8, { size: 40, weight: 800, align: "center", spacing: 8 });
+  text("P or click to resume  ·  R to restart  ·  Esc for menu", CX, H / 2 + 26, { size: 15, align: "center", color: "#b9c4d8" });
+}
+function drawOver() {
+  const g = game, s = g.stats;
+  ctx.fillStyle = "rgba(8,10,16,.7)"; ctx.fillRect(0, 0, W, H);
+  const pw = 440, ph = 330, px = CX - pw / 2, py = H / 2 - ph / 2;
+  rrect(ctx, px, py, pw, ph, 14);
+  ctx.fillStyle = "rgba(22,27,40,.96)"; ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.12)"; ctx.lineWidth = 1; ctx.stroke();
+  const ranged = g.mode === "range";
+  text(ranged ? "TIME'S UP" : "YOU'RE DOWN", CX, py + 50, { size: 30, weight: 800, align: "center", spacing: 5, color: ranged ? "#ffd84d" : "#ff5d5d" });
+  text(g.score.toLocaleString(), CX, py + 104, { size: 44, weight: 800, align: "center" });
+  if (g.newBest) text("NEW BEST", CX, py + 130, { size: 13, weight: 800, align: "center", color: "#ffd84d", spacing: 3 });
+  else text(`BEST ${g.best[g.mode].toLocaleString()}`, CX, py + 130, { size: 12, weight: 700, align: "center", color: "rgba(223,230,242,.5)", spacing: 2 });
+  const acc = s.thrown ? Math.round(s.hits / s.thrown * 100) + "%" : "—";
+  const rows = g.mode === "fight"
+    ? [["Wave reached", g.wave], ["Takedowns", s.kills], ["Headshots", s.heads], ["Deflects", s.deflects], ["Knives thrown", s.thrown], ["Throw accuracy", acc]]
+    : g.mode === "duel"
+      ? [["Aces down", g.duelN - 1], ["Headshots", s.heads], ["Deflects", s.deflects], ["Knives thrown", s.thrown], ["Throw accuracy", acc], ["Best combo", s.bestCombo]]
+      : [["Knives thrown", s.thrown], ["Hits", s.hits], ["Bullseyes", s.bulls], ["Accuracy", acc], ["Best combo", s.bestCombo]];
+  rows.forEach(([k, v], i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = px + 40 + col * 200, y = py + 170 + row * 30;
+    text(k, x, y, { size: 13, color: "#b9c4d8" });
+    text(String(v), x + 160, y, { size: 14, weight: 800, align: "right" });
+  });
+  if (g.overT > 0.7) text("Click or press Enter to play again  ·  Esc for menu", CX, py + ph - 22, { size: 13, align: "center", color: "rgba(223,230,242,.6)" });
+}
+
+function render() {
+  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (game.state === "menu") {
+    drawMenu();
+    drawViewmodel(true);
+    drawCrosshair();
+    return;
+  }
+  ctx.save();
+  if (game.shake > 0.3) ctx.translate(rand(-0.5, 0.5) * game.shake, rand(-0.5, 0.5) * game.shake);
+  drawWorld();
+  drawEffects();
+  drawViewmodel();
+  ctx.restore();
+  if (game.hurtFlash > 0) {
+    ctx.fillStyle = `rgba(255,30,50,${game.hurtFlash / 0.35 * 0.3})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  drawScratch();
+  drawHUD();
+  drawBanner();
+  if (game.state === "paused") drawPause();
+  if (game.state === "over") drawOver();
+  drawCrosshair();
+}
+
+fit();
+addEventListener("resize", fit);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
