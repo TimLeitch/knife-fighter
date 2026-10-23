@@ -126,21 +126,23 @@ function mergeCloudBests() {
 function persistBests() {
   for (const m of ["fight", "range", "duel"]) saveBest("kf_best_" + m, game.best[m] || 0);
   if (!siteMode()) return;
+  const s = game.stats || {};
   window.KG.save({
     best: { fight: game.best.fight, range: game.best.range, duel: game.best.duel },
-    kills: Math.max((window.KG.initialSave && window.KG.initialSave.kills) || 0, game.stats.kills || 0),
-    heads: Math.max((window.KG.initialSave && window.KG.initialSave.heads) || 0, game.stats.heads || 0),
+    kills: Math.max((window.KG.initialSave && window.KG.initialSave.kills) || 0, s.kills || 0),
+    heads: Math.max((window.KG.initialSave && window.KG.initialSave.heads) || 0, s.heads || 0),
   });
 }
 function reportProgress() {
   if (!siteMode()) return;
   const lifetime = window.KG.initialSave || {};
+  const s = game.stats || {};
   window.KG.report({
-    waveBest: game.best.fight,
-    rangeBest: game.best.range,
-    throwdownBest: game.best.duel,
-    kills: Math.max(lifetime.kills || 0, game.stats.kills || 0),
-    heads: Math.max(lifetime.heads || 0, game.stats.heads || 0),
+    waveBest: game.best.fight || 0,
+    rangeBest: game.best.range || 0,
+    throwdownBest: game.best.duel || 0,
+    kills: Math.max(lifetime.kills || 0, s.kills || 0),
+    heads: Math.max(lifetime.heads || 0, s.heads || 0),
   });
 }
 function siteStatus() {
@@ -769,6 +771,7 @@ const game = {
   best: { fight: loadBest("kf_best_fight"), range: loadBest("kf_best_range"), duel: loadBest("kf_best_duel") },
   particles: [], popups: [], knives: [], enemies: [], targets: [],
   slots: [null],
+  stats: { thrown: 0, hits: 0, heads: 0, deflects: 0, kills: 0, bulls: 0, bestCombo: 0 },
   get mult() { return Math.min(5, 1 + Math.floor(this.combo / 4)); },
   get hasKnife() { return this.mode === "range" || this.belt > 0; },
 
@@ -1621,7 +1624,9 @@ function drawMenu() {
     ctx.fillStyle = hover ? "rgba(40,50,72,.95)" : "rgba(20,25,38,.88)"; ctx.fill();
     ctx.strokeStyle = hover ? "#ff5d5d" : "rgba(255,255,255,.12)"; ctx.lineWidth = 1; ctx.stroke();
     text("◀ GAMES", HOME_BTN.x + HOME_BTN.w / 2, HOME_BTN.y + 21, { size: 13, weight: 800, align: "center", color: "#b9c4d8" });
-    text(window.KG.user.username, W - 22, 38, { size: 13, weight: 700, align: "right", color: "rgba(223,230,242,.55)" });
+    if (window.KG.user && window.KG.user.username) {
+      text(window.KG.user.username, W - 22, 38, { size: 13, weight: 700, align: "right", color: "rgba(223,230,242,.55)" });
+    }
   }
   text("KNIFE THROWER", CX, 120, { size: 60, weight: 800, align: "center", spacing: 10, shadow: true });
   text("first person · aim · charge · throw · deflect", CX, 152, { size: 15, align: "center", color: "rgba(223,230,242,.7)", spacing: 3 });
