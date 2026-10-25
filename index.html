@@ -176,6 +176,17 @@ function reportProgress() {
     heads: Math.max(lifetime.heads || 0, s.heads || 0),
   });
 }
+// A run only reaches end() when the player goes down or the range timer runs out. On a phone a
+// player usually just closes the tab or switches apps, so keep a running score that already beats
+// the best whenever the run is left: hidden, page closed, back to the menu, restarted, next wave.
+function bankRun() {
+  const g = game;
+  if ((g.state !== "play" && g.state !== "paused") || !(g.score > (g.best[g.mode] || 0))) return;
+  g.best[g.mode] = g.score;
+  saveBest("kf_best_" + g.mode, g.score);
+  persistBests();
+  reportProgress();
+}
 function siteStatus() {
   if (!siteMode() || game.state !== "play") return;
   if (game.mode === "fight") window.KG.setStatus(`Wave ${game.wave} · score ${game.score.toLocaleString()}`);
@@ -209,11 +220,13 @@ addEventListener("keyup", e => { keys[e.code] = false; });
 // Pause only when the tab is actually hidden.
 addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    bankRun();
     for (const k in keys) keys[k] = false;
     mouse.down = false; game.charging = false;
     if (game.state === "play") game.state = "paused";
   }
 });
+addEventListener("pagehide", bankRun);
 function trackPointer(e) {
   const r = canvas.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return;
@@ -853,7 +866,9 @@ const game = {
   get hasKnife() { return this.mode === "range" || this.belt > 0; },
 
   start(mode) {
+    bankRun(); // restarting mid-run keeps the score so far
     this.mode = mode;
+    this.runStartBest = this.best[mode] || 0; // "new best" is judged against the best before this run
     this.state = "play";
     this.score = 0; this.combo = 0;
     this.hp = MAX_HP; this.iframes = 0; this.hurtFlash = 0; this.shake = 0; this.scratch = null;
@@ -877,9 +892,9 @@ const game = {
   },
   end() {
     this.state = "over"; this.overT = 0; this.charging = false;
-    const prev = this.best[this.mode];
+    const prev = this.runStartBest != null ? this.runStartBest : this.best[this.mode];
     this.newBest = this.score > prev;
-    if (this.newBest) { this.best[this.mode] = this.score; saveBest("kf_best_" + this.mode, this.score); }
+    if (this.score > (this.best[this.mode] || 0)) { this.best[this.mode] = this.score; saveBest("kf_best_" + this.mode, this.score); }
     persistBests();
     reportProgress();
     if (siteMode()) window.KG.event(this.mode === "range" ? "range_complete" : "run_over", {
@@ -938,6 +953,7 @@ function buildWave(n) {
 }
 function startWave(n) {
   const g = game;
+  if (n > 1) bankRun();
   g.wave = n; g.queue = buildWave(n);
   g.wavePhase = "intro"; g.phaseT = 2.4;
   g.pace = Math.max(0.6, 1 - 0.045 * (n - 1));
@@ -1217,7 +1233,7 @@ function tick() {
   }
   if (g.state === "paused") {
     if (pressed.KeyP || mouse.pressed) g.state = "play";
-    else if (pressed.Escape) g.state = "menu";
+    else if (pressed.Escape) { bankRun(); g.state = "menu"; }
     else if (pressed.KeyR) g.start(g.mode);
     mouse.down = false; g.charging = false;
     clearInput(); return;
